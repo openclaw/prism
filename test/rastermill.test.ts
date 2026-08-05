@@ -248,6 +248,47 @@ function heifLikeImage(...sizes: Array<{ width: number; height: number }>): Buff
   return Buffer.concat([isoBox("ftyp", ftypPayload), meta]);
 }
 
+type HeifTransform = { type: "irot"; value: 0 | 1 | 2 | 3 } | { type: "imir"; value: 0 | 1 };
+
+function heifImageWithTransforms(
+  width: number,
+  height: number,
+  transforms: readonly HeifTransform[],
+  options: { primaryItemId?: number; associationItemId?: number } = {},
+): Buffer {
+  const ftypPayload = Buffer.alloc(8);
+  ftypPayload.write("heic", 0, "ascii");
+
+  const pitmPayload = Buffer.alloc(6);
+  pitmPayload.writeUInt16BE(options.primaryItemId ?? 1, 4);
+  const pitm = isoBox("pitm", pitmPayload);
+
+  const ispePayload = Buffer.alloc(12);
+  ispePayload.writeUInt32BE(width, 4);
+  ispePayload.writeUInt32BE(height, 8);
+  const properties = [
+    isoBox("ispe", ispePayload),
+    ...transforms.map((transform) => isoBox(transform.type, Buffer.from([transform.value]))),
+  ];
+  const ipco = isoBox("ipco", Buffer.concat(properties));
+
+  const ipmaPayload = Buffer.alloc(4 + 4 + 2 + 1 + properties.length);
+  let offset = 4;
+  ipmaPayload.writeUInt32BE(1, offset);
+  offset += 4;
+  ipmaPayload.writeUInt16BE(options.associationItemId ?? 1, offset);
+  offset += 2;
+  ipmaPayload[offset] = properties.length;
+  offset += 1;
+  properties.forEach((_, index) => {
+    ipmaPayload[offset + index] = index + 1;
+  });
+  const ipma = isoBox("ipma", ipmaPayload);
+  const iprp = isoBox("iprp", Buffer.concat([ipco, ipma]));
+  const meta = isoBox("meta", Buffer.concat([Buffer.alloc(4), pitm, iprp]));
+  return Buffer.concat([isoBox("ftyp", ftypPayload), meta]);
+}
+
 function bmpHeader(width: number, height: number): Buffer {
   const buffer = Buffer.alloc(26);
   buffer.write("BM", 0, "ascii");
@@ -431,6 +472,68 @@ describe("Rastermill", () => {
     expect(readImageProbeFromHeader(jpegWithExifOrientation(6, 4, 9))).toMatchObject({
       orientation: null,
     });
+  });
+
+  it("reads and composes HEIF irot/imir transforms for the primary image", () => {
+    const cases: Array<{ transforms: HeifTransform[]; orientation: number }> = [
+      { transforms: [{ type: "irot", value: 0 }], orientation: 1 },
+      { transforms: [{ type: "irot", value: 1 }], orientation: 8 },
+      { transforms: [{ type: "irot", value: 2 }], orientation: 3 },
+      { transforms: [{ type: "irot", value: 3 }], orientation: 6 },
+      {
+        transforms: [
+          { type: "irot", value: 0 },
+          { type: "imir", value: 1 },
+        ],
+        orientation: 2,
+      },
+      {
+        transforms: [
+          { type: "irot", value: 1 },
+          { type: "imir", value: 1 },
+        ],
+        orientation: 7,
+      },
+      {
+        transforms: [
+          { type: "irot", value: 2 },
+          { type: "imir", value: 1 },
+        ],
+        orientation: 4,
+      },
+      {
+        transforms: [
+          { type: "irot", value: 3 },
+          { type: "imir", value: 1 },
+        ],
+        orientation: 5,
+      },
+    ];
+
+    for (const { transforms, orientation } of cases) {
+      expect(readImageProbeFromHeader(heifImageWithTransforms(6, 4, transforms))).toMatchObject({
+        format: "heif",
+        width: 6,
+        height: 4,
+        orientation,
+      });
+    }
+    expect(
+      readImageProbeFromHeader(
+        heifImageWithTransforms(6, 4, [
+          { type: "imir", value: 1 },
+          { type: "irot", value: 1 },
+        ]),
+      ),
+    ).toMatchObject({ orientation: 5 });
+    expect(
+      readImageProbeFromHeader(
+        heifImageWithTransforms(6, 4, [{ type: "irot", value: 3 }], {
+          primaryItemId: 2,
+          associationItemId: 1,
+        }),
+      ),
+    ).toMatchObject({ orientation: null });
   });
 
   it("supports default-instance helpers and ArrayBuffer inputs", async () => {
@@ -1272,6 +1375,40 @@ describe("Rastermill", () => {
         });
 
         expect(result).toMatchObject({ format: "jpeg", width: 2, height: 4 });
+        const invocations = (await readFile(log, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as string[]);
+        expect(invocations[0]).toEqual(expect.arrayContaining(["-r", "90", "--out"]));
+        expect(invocations[1]).toEqual(expect.arrayContaining(["-s", "format", "jpeg"]));
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "darwin")(
+    "applies HEIF irot orientation before sips encoding",
+    async () => {
+      const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-sips-heif-orient-"));
+      try {
+        const log = path.join(tmp, "args.jsonl");
+        const script = path.join(tmp, "sips.js");
+        await writeImageToolScript(script, log, {
+          jpeg: jpegWithAppMetadata(2, 4),
+        });
+        const rastermill = createRastermill({
+          execution: "external",
+          commandResolver: (command) => (command === "sips" ? script : null),
+        });
+
+        const result = await rastermill.encode(
+          heifImageWithTransforms(4, 2, [{ type: "irot", value: 3 }]),
+          { format: "jpeg" },
+        );
+
+        expect(result).toMatchObject({ format: "jpeg", width: 2, height: 4 });
+        expect(readImageProbeFromHeader(result.data)).toMatchObject({ orientation: null });
         const invocations = (await readFile(log, "utf8"))
           .trim()
           .split("\n")
