@@ -475,11 +475,41 @@ describe("Rastermill", () => {
   });
 
   it("reads and composes HEIF irot/imir transforms for the primary image", () => {
+    // ISO/IEC 23008-12 §6.5.12.3 maps imir axis 0 to top/bottom
+    // exchange (EXIF 4) and axis 1 to left/right exchange (EXIF 2).
     const cases: Array<{ transforms: HeifTransform[]; orientation: number }> = [
       { transforms: [{ type: "irot", value: 0 }], orientation: 1 },
       { transforms: [{ type: "irot", value: 1 }], orientation: 8 },
       { transforms: [{ type: "irot", value: 2 }], orientation: 3 },
       { transforms: [{ type: "irot", value: 3 }], orientation: 6 },
+      {
+        transforms: [
+          { type: "irot", value: 0 },
+          { type: "imir", value: 0 },
+        ],
+        orientation: 4,
+      },
+      {
+        transforms: [
+          { type: "irot", value: 1 },
+          { type: "imir", value: 0 },
+        ],
+        orientation: 5,
+      },
+      {
+        transforms: [
+          { type: "irot", value: 2 },
+          { type: "imir", value: 0 },
+        ],
+        orientation: 2,
+      },
+      {
+        transforms: [
+          { type: "irot", value: 3 },
+          { type: "imir", value: 0 },
+        ],
+        orientation: 7,
+      },
       {
         transforms: [
           { type: "irot", value: 0 },
