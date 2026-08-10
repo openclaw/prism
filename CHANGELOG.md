@@ -1,8 +1,11 @@
 # Changelog
 
-## 0.3.2 - Unreleased
+## 0.3.2 - 2026-08-09
 
-- Auto-orient primary-image HEIF/AVIF `irot` and `imir` transforms while keeping probe and output geometry bound to the same item.
+**Highlight:** HEIF and AVIF images now keep their orientation. Rotated or
+mirrored photos from Apple devices previously came out untransformed.
+
+- Auto-orient primary-image HEIF/AVIF `irot` and `imir` transforms. Container transforms were read for dimensions but never applied to pixels, so all eight orientation classes produced identical, unrotated output. Probe and output geometry now stay bound to the same image item, so a file carrying a larger auxiliary image no longer reports that image's dimensions (thanks @lockhartheavyindustries)
 - Update the TypeScript, Node types, formatter, linter, and Vitest 3 validation toolchain.
 
 ## 0.3.1 - 2026-05-30
