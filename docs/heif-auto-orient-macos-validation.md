@@ -1,12 +1,15 @@
 # HEIF auto-orientation macOS validation
 
 This is a redacted transcript from a real iPhone HEIC processed on macOS with
-the Rastermill build from this pull request. The private source image and its
-content are intentionally not included.
+the original implementation at commit `e3fd172`. The private source image and
+its content are intentionally not included. Later commits bind the geometry to
+the primary item and accumulate split property associations; those container
+shapes are covered by automated tests.
 
 ## Build identity
 
-The installed build used for the run matched the pull-request build exactly:
+The installed build used for the real-device run matched commit `e3fd172`
+exactly:
 
 ```text
 $ shasum -a 256 dist/index.js

@@ -419,7 +419,7 @@ function findIsoBmffIspeMetadata(buffer, start, end, depth) {
     }
     return largest;
 }
-function readIsoBmffImageMetadata(buffer) {
+function readLargestIsoBmffImageMetadata(buffer) {
     return isIsoBmffImage(buffer) ? findIsoBmffIspeMetadata(buffer, 0, buffer.length, 0) : null;
 }
 const EXIF_ORIENTATION_MATRICES = new Map([
@@ -489,6 +489,7 @@ function readIsoBmffPropertyAssociations(buffer, box, primaryItemId) {
     offset += 4;
     const itemIdBytes = header.version === 0 ? 2 : 4;
     const associationBytes = header.flags & 1 ? 2 : 1;
+    const propertyIndices = [];
     for (let entry = 0; entry < entryCount; entry += 1) {
         if (offset + itemIdBytes + 1 > box.end) {
             return null;
@@ -500,20 +501,16 @@ function readIsoBmffPropertyAssociations(buffer, box, primaryItemId) {
         if (offset + associationCount * associationBytes > box.end) {
             return null;
         }
-        const propertyIndices = [];
         for (let association = 0; association < associationCount; association += 1) {
             const raw = associationBytes === 2 ? buffer.readUInt16BE(offset) : (buffer[offset] ?? 0);
             offset += associationBytes;
             const propertyIndex = raw & (associationBytes === 2 ? 0x7fff : 0x7f);
-            if (propertyIndex !== 0) {
+            if (itemId === primaryItemId && propertyIndex !== 0) {
                 propertyIndices.push(propertyIndex);
             }
         }
-        if (itemId === primaryItemId) {
-            return propertyIndices;
-        }
     }
-    return [];
+    return propertyIndices;
 }
 function multiplyOrientationMatrices(after, before) {
     return [
@@ -523,7 +520,7 @@ function multiplyOrientationMatrices(after, before) {
         after[2] * before[1] + after[3] * before[3],
     ];
 }
-function readIsoBmffOrientation(buffer) {
+function readIsoBmffPrimaryItemMetadata(buffer) {
     if (!isIsoBmffImage(buffer)) {
         return null;
     }
@@ -549,16 +546,18 @@ function readIsoBmffOrientation(buffer) {
     if (!properties) {
         return null;
     }
-    let propertyIndices = [];
+    const propertyIndices = [];
     for (const ipma of ipmaBoxes) {
-        propertyIndices = readIsoBmffPropertyAssociations(buffer, ipma, primaryItemId);
-        if (propertyIndices === null || propertyIndices.length > 0) {
-            break;
+        const associations = readIsoBmffPropertyAssociations(buffer, ipma, primaryItemId);
+        if (associations === null) {
+            return null;
         }
+        propertyIndices.push(...associations);
     }
-    if (!propertyIndices || propertyIndices.length === 0) {
+    if (propertyIndices.length === 0) {
         return null;
     }
+    let metadata = null;
     let matrix = [1, 0, 0, 1];
     let transformed = false;
     for (const propertyIndex of propertyIndices) {
@@ -567,7 +566,10 @@ function readIsoBmffOrientation(buffer) {
             continue;
         }
         let propertyMatrix = null;
-        if (property.type === "irot") {
+        if (property.type === "ispe" && property.dataStart + 12 <= property.end) {
+            metadata ??= normalizeMetadata(buffer.readUInt32BE(property.dataStart + 4), buffer.readUInt32BE(property.dataStart + 8));
+        }
+        else if (property.type === "irot") {
             const rotation = (buffer[property.dataStart] ?? 0) & 0x03;
             propertyMatrix = HEIF_ROTATION_MATRICES[rotation] ?? null;
         }
@@ -579,7 +581,16 @@ function readIsoBmffOrientation(buffer) {
             transformed = true;
         }
     }
-    return transformed ? (EXIF_ORIENTATION_MATRICES.get(matrix.join(",")) ?? null) : null;
+    if (!metadata) {
+        return null;
+    }
+    return {
+        metadata,
+        orientation: transformed ? (EXIF_ORIENTATION_MATRICES.get(matrix.join(",")) ?? null) : null,
+    };
+}
+function readIsoBmffOrientation(buffer) {
+    return readIsoBmffPrimaryItemMetadata(buffer)?.orientation ?? null;
 }
 function readImageOrientation(buffer) {
     return readJpegExifOrientation(buffer) ?? readIsoBmffOrientation(buffer);
@@ -663,13 +674,14 @@ export function readImageProbeFromHeader(input) {
     if (tiff) {
         return { ...tiff, format: "tiff", hasAlpha: null, orientation: null, bytes: buffer.length };
     }
-    const heif = readIsoBmffImageMetadata(buffer);
+    const primaryHeif = readIsoBmffPrimaryItemMetadata(buffer);
+    const heif = primaryHeif?.metadata ?? readLargestIsoBmffImageMetadata(buffer);
     if (heif) {
         return {
             ...heif,
             format: isAvifImage(buffer) ? "avif" : "heif",
             hasAlpha: null,
-            orientation: readIsoBmffOrientation(buffer),
+            orientation: primaryHeif?.orientation ?? null,
             bytes: buffer.length,
         };
     }

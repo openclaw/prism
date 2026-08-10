@@ -254,7 +254,13 @@ function heifImageWithTransforms(
   width: number,
   height: number,
   transforms: readonly HeifTransform[],
-  options: { primaryItemId?: number; associationItemId?: number } = {},
+  options: {
+    primaryItemId?: number;
+    associationItemId?: number;
+    auxiliarySize?: { width: number; height: number };
+    primaryAssociationGroups?: readonly (readonly number[])[];
+    splitIpmaBoxes?: boolean;
+  } = {},
 ): Buffer {
   const ftypPayload = Buffer.alloc(8);
   ftypPayload.write("heic", 0, "ascii");
@@ -266,25 +272,52 @@ function heifImageWithTransforms(
   const ispePayload = Buffer.alloc(12);
   ispePayload.writeUInt32BE(width, 4);
   ispePayload.writeUInt32BE(height, 8);
-  const properties = [
+  const primaryProperties = [
     isoBox("ispe", ispePayload),
     ...transforms.map((transform) => isoBox(transform.type, Buffer.from([transform.value]))),
   ];
+  const auxiliaryIspe = options.auxiliarySize
+    ? (() => {
+        const payload = Buffer.alloc(12);
+        payload.writeUInt32BE(options.auxiliarySize.width, 4);
+        payload.writeUInt32BE(options.auxiliarySize.height, 8);
+        return isoBox("ispe", payload);
+      })()
+    : null;
+  const properties = auxiliaryIspe ? [...primaryProperties, auxiliaryIspe] : primaryProperties;
   const ipco = isoBox("ipco", Buffer.concat(properties));
 
-  const ipmaPayload = Buffer.alloc(4 + 4 + 2 + 1 + properties.length);
-  let offset = 4;
-  ipmaPayload.writeUInt32BE(1, offset);
-  offset += 4;
-  ipmaPayload.writeUInt16BE(options.associationItemId ?? 1, offset);
-  offset += 2;
-  ipmaPayload[offset] = properties.length;
-  offset += 1;
-  properties.forEach((_, index) => {
-    ipmaPayload[offset + index] = index + 1;
+  const primaryAssociationGroups = options.primaryAssociationGroups ?? [
+    primaryProperties.map((_, index) => index + 1),
+  ];
+  const associationBoxes = options.splitIpmaBoxes
+    ? primaryAssociationGroups.map((indices) => [indices])
+    : [primaryAssociationGroups];
+  const ipmaBoxes = associationBoxes.map((groups, boxIndex) => {
+    const entries = groups.map((indices) => ({
+      itemId: options.associationItemId ?? 1,
+      indices,
+    }));
+    if (boxIndex === 0 && auxiliaryIspe) {
+      entries.push({ itemId: 2, indices: [properties.length] });
+    }
+    const payloadBytes = entries.reduce((total, entry) => total + 3 + entry.indices.length, 8);
+    const payload = Buffer.alloc(payloadBytes);
+    payload.writeUInt32BE(entries.length, 4);
+    let offset = 8;
+    for (const entry of entries) {
+      payload.writeUInt16BE(entry.itemId, offset);
+      offset += 2;
+      payload[offset] = entry.indices.length;
+      offset += 1;
+      for (const propertyIndex of entry.indices) {
+        payload[offset] = propertyIndex;
+        offset += 1;
+      }
+    }
+    return isoBox("ipma", payload);
   });
-  const ipma = isoBox("ipma", ipmaPayload);
-  const iprp = isoBox("iprp", Buffer.concat([ipco, ipma]));
+  const iprp = isoBox("iprp", Buffer.concat([ipco, ...ipmaBoxes]));
   const meta = isoBox("meta", Buffer.concat([Buffer.alloc(4), pitm, iprp]));
   return Buffer.concat([isoBox("ftyp", ftypPayload), meta]);
 }
@@ -564,6 +597,32 @@ describe("Rastermill", () => {
         }),
       ),
     ).toMatchObject({ orientation: null });
+  });
+
+  it("binds HEIF dimensions and every transform association to the primary image", () => {
+    const transforms: HeifTransform[] = [
+      { type: "irot", value: 3 },
+      { type: "imir", value: 1 },
+    ];
+    const repeatedRecords = heifImageWithTransforms(6, 4, transforms, {
+      auxiliarySize: { width: 20, height: 10 },
+      primaryAssociationGroups: [[1, 2], [3]],
+    });
+    const splitBoxes = heifImageWithTransforms(6, 4, transforms, {
+      primaryAssociationGroups: [[1, 2], [3]],
+      splitIpmaBoxes: true,
+    });
+
+    expect(readImageProbeFromHeader(repeatedRecords)).toMatchObject({
+      width: 6,
+      height: 4,
+      orientation: 5,
+    });
+    expect(readImageProbeFromHeader(splitBoxes)).toMatchObject({
+      width: 6,
+      height: 4,
+      orientation: 5,
+    });
   });
 
   it("supports default-instance helpers and ArrayBuffer inputs", async () => {
