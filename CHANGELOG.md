@@ -2,6 +2,9 @@
 
 ## 0.3.2 - Unreleased
 
+- Auto-orient primary-image HEIF/AVIF `irot` and `imir` transforms while keeping probe and output geometry bound to the same item.
+- Update the TypeScript, Node types, formatter, linter, and Vitest 3 validation toolchain.
+
 ## 0.3.1 - 2026-05-30
 
 - Add `maxBase64Bytes` encode budgets and `base64Bytes` output metadata for model and messaging payload limits.

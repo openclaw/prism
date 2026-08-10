@@ -50,7 +50,7 @@ default-configured instance:
 import { probe, transparency, encode } from "rastermill";
 ```
 
-A straight format conversion (e.g. HEIC/AVIF → JPEG) is just `encode(input, { format: "jpeg" })` with no `resize`. JPEG EXIF orientation is baked in by default; HEIC orientation handling depends on the native backend. Pass `autoOrient: false` to skip explicit orientation work.
+A straight format conversion (e.g. HEIC/AVIF → JPEG) is just `encode(input, { format: "jpeg" })` with no `resize`. JPEG EXIF orientation and primary-image HEIF/AVIF `irot`/`imir` transforms are detected for probing and output geometry. Rastermill applies them explicitly with the macOS `sips` backend; other native decoders retain their existing container-transform behavior. Pass `autoOrient: false` to skip explicit orientation work.
 
 Encoded outputs strip metadata by default. `metadata: "preserve"` only preserves
 metadata when Rastermill can return the original bytes unchanged; Photon does not
