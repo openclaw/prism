@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.3 - Unreleased
+
 ## 0.3.2 - 2026-08-09
 
 **Highlight:** HEIF and AVIF images now keep their orientation. Rotated or
