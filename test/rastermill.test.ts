@@ -1306,6 +1306,35 @@ describe("Rastermill", () => {
     }
   });
 
+  it("rejects external tools that exceed maxProcessBufferBytes even on exit 0", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-buffer-cap-"));
+    try {
+      const log = path.join(tmp, "args.jsonl");
+      const script = path.join(tmp, "ffmpeg.js");
+      await writeImageToolScript(script, log, { jpeg: jpegWithAppMetadata(4, 2) });
+      await writeFile(
+        script,
+        `${await readFile(script, "utf8")}\nprocess.stderr.write("x".repeat(256));\nprocess.stdout.write("y".repeat(256));\n`,
+        "utf8",
+      );
+      const rastermill = createRastermill({
+        execution: "external",
+        maxProcessBufferBytes: 64,
+        commandResolver: (command) => (command === "ffmpeg" ? script : null),
+      });
+
+      await expect(
+        rastermill.encode(rgbaImage(8, 4), {
+          format: "jpeg",
+          resize: { maxSide: 4 },
+          quality: 70,
+        }),
+      ).rejects.toThrow(/maxProcessBufferBytes/);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("passes -nostdin and ignores stdin on every ffmpeg encode path", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-ffmpeg-stdin-"));
     try {

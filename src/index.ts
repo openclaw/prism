@@ -2002,20 +2002,41 @@ async function runTool(
       ...(signal === undefined ? {} : { signal }),
     });
     const stderrChunks: Buffer[] = [];
-    let stderrBytes = 0;
-    child.stdout?.resume();
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderrBytes += chunk.length;
-      if (stderrBytes <= options.maxProcessBufferBytes) {
-        stderrChunks.push(chunk);
-      }
-    });
+    let capturedBytes = 0;
+    let overflowed = false;
+    const consume = (stream: NodeJS.ReadableStream | null, keep: boolean): void => {
+      stream?.on("data", (chunk: Buffer) => {
+        capturedBytes += chunk.length;
+        if (capturedBytes > options.maxProcessBufferBytes) {
+          overflowed = true;
+          child.kill();
+          return;
+        }
+        if (keep) {
+          stderrChunks.push(chunk);
+        }
+      });
+    };
+    consume(child.stdout, false);
+    consume(child.stderr, true);
     child.on("error", (error) => {
       finish(() => {
         reject(error);
       });
     });
     child.on("close", (code, killSignal) => {
+      if (overflowed) {
+        finish(() => {
+          reject(
+            Object.assign(new Error(`Command exceeded maxProcessBufferBytes: ${command}`), {
+              code: "ERR_BUFFER_OVERFLOW",
+              killed: child.killed,
+              signal: killSignal,
+            }),
+          );
+        });
+        return;
+      }
       if (code === 0) {
         finish(() => {
           resolve();
