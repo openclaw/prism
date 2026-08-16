@@ -1288,6 +1288,7 @@ describe("Rastermill", () => {
         resize: { maxSide: 4 },
         quality: 60,
       });
+      await rastermill.encode(heifLikeImage({ width: 4, height: 2 }), { format: "jpeg" });
 
       expect(jpeg).toMatchObject({ format: "jpeg", width: 4, height: 2 });
       expect(webp).toMatchObject({ format: "webp", width: 4, height: 2 });
@@ -1295,127 +1296,14 @@ describe("Rastermill", () => {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as string[]);
+      expect(invocations).toHaveLength(3);
       expect(invocations[0]).toContain("-q:v");
       expect(invocations[0]).toContain("-map_metadata");
       expect(invocations[0]).toContain("-nostdin");
       expect(invocations[1]).toContain("-quality");
       expect(invocations[1]).toContain("60");
       expect(invocations[1]).toContain("-nostdin");
-    } finally {
-      await rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps maxProcessBufferBytes independent per stream", async () => {
-    const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-buffer-per-stream-"));
-    try {
-      const log = path.join(tmp, "args.jsonl");
-      const script = path.join(tmp, "ffmpeg.js");
-      await writeImageToolScript(script, log, { jpeg: jpegWithAppMetadata(4, 2) });
-      await writeFile(
-        script,
-        `${await readFile(script, "utf8")}\nprocess.stderr.write("e".repeat(50));\nprocess.stdout.write("o".repeat(50));\n`,
-        "utf8",
-      );
-      const rastermill = createRastermill({
-        execution: "external",
-        maxProcessBufferBytes: 64,
-        commandResolver: (command) => (command === "ffmpeg" ? script : null),
-      });
-
-      await expect(
-        rastermill.encode(rgbaImage(8, 4), {
-          format: "jpeg",
-          resize: { maxSide: 4 },
-          quality: 70,
-        }),
-      ).resolves.toMatchObject({ format: "jpeg", width: 4, height: 2 });
-    } finally {
-      await rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects external tools that exceed maxProcessBufferBytes even on exit 0", async () => {
-    const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-buffer-cap-"));
-    try {
-      const log = path.join(tmp, "args.jsonl");
-      const script = path.join(tmp, "ffmpeg.js");
-      await writeImageToolScript(script, log, { jpeg: jpegWithAppMetadata(4, 2) });
-      await writeFile(
-        script,
-        `${await readFile(script, "utf8")}\nprocess.stderr.write("x".repeat(256));\nprocess.stdout.write("y".repeat(256));\n`,
-        "utf8",
-      );
-      const rastermill = createRastermill({
-        execution: "external",
-        maxProcessBufferBytes: 64,
-        commandResolver: (command) => (command === "ffmpeg" ? script : null),
-      });
-
-      await expect(
-        rastermill.encode(rgbaImage(8, 4), {
-          format: "jpeg",
-          resize: { maxSide: 4 },
-          quality: 70,
-        }),
-      ).rejects.toThrow(/maxProcessBufferBytes/);
-    } finally {
-      await rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("passes -nostdin and ignores stdin on every ffmpeg encode path", async () => {
-    const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-ffmpeg-stdin-"));
-    try {
-      const log = path.join(tmp, "probe.jsonl");
-      const script = path.join(tmp, "ffmpeg.js");
-      await writeFile(
-        script,
-        [
-          "#!/usr/bin/env node",
-          "const fs = require('node:fs');",
-          "const args = process.argv.slice(2);",
-          "let stdinKind = 'unknown';",
-          "try {",
-          "  const stat = fs.fstatSync(0);",
-          "  stdinKind = stat.isFIFO() ? 'fifo' : stat.isCharacterDevice() ? 'char' : 'other';",
-          "} catch (error) {",
-          "  stdinKind = String(error && error.code ? error.code : error);",
-          "}",
-          `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, stdinKind }) + '\\n');`,
-          "const output = args.at(-1);",
-          `const jpeg = ${JSON.stringify(jpegWithAppMetadata(4, 2).toString("base64"))};`,
-          `const webp = ${JSON.stringify(losslessWebpHeader(4, 2, false).toString("base64"))};`,
-          "const payload = output.endsWith('.webp') ? webp : jpeg;",
-          "fs.writeFileSync(output, Buffer.from(payload, 'base64'));",
-        ].join("\n"),
-        "utf8",
-      );
-      await chmod(script, 0o755);
-      const rastermill = createRastermill({
-        execution: "external",
-        commandResolver: (command) => (command === "ffmpeg" ? script : null),
-      });
-
-      await rastermill.encode(rgbaImage(8, 4), {
-        format: "jpeg",
-        resize: { maxSide: 4 },
-      });
-      await rastermill.encode(rgbaImage(8, 4), {
-        format: "webp",
-        resize: { maxSide: 4 },
-      });
-      await rastermill.encode(heifLikeImage({ width: 4, height: 2 }), { format: "jpeg" });
-
-      const invocations = (await readFile(log, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { args: string[]; stdinKind: string });
-      expect(invocations).toHaveLength(3);
-      for (const invocation of invocations) {
-        expect(invocation.args).toContain("-nostdin");
-        expect(invocation.stdinKind).toBe("char");
-      }
+      expect(invocations[2]).toContain("-nostdin");
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

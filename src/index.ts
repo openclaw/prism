@@ -1,8 +1,11 @@
-import { spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { deflateSync, inflateSync } from "node:zlib";
+
+const execFileAsync = promisify(execFile);
 
 type PhotonModule = typeof import("@silvia-odwyer/photon-node");
 type PhotonImage = InstanceType<PhotonModule["PhotonImage"]>;
@@ -1987,74 +1990,10 @@ async function runTool(
   options: ResolvedOptions,
   signal?: AbortSignal,
 ): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const finish = (fn: () => void): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      fn();
-    };
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: options.timeoutMs,
-      ...(signal === undefined ? {} : { signal }),
-    });
-    const stderrChunks: Buffer[] = [];
-    let overflowed = false;
-    const consume = (stream: NodeJS.ReadableStream | null, keep: boolean): void => {
-      let capturedBytes = 0;
-      stream?.on("data", (chunk: Buffer) => {
-        capturedBytes += chunk.length;
-        if (capturedBytes > options.maxProcessBufferBytes) {
-          overflowed = true;
-          child.kill();
-          return;
-        }
-        if (keep) {
-          stderrChunks.push(chunk);
-        }
-      });
-    };
-    consume(child.stdout, false);
-    consume(child.stderr, true);
-    child.on("error", (error) => {
-      finish(() => {
-        reject(error);
-      });
-    });
-    child.on("close", (code, killSignal) => {
-      if (overflowed) {
-        finish(() => {
-          reject(
-            Object.assign(new Error(`Command exceeded maxProcessBufferBytes: ${command}`), {
-              code: "ERR_BUFFER_OVERFLOW",
-              killed: child.killed,
-              signal: killSignal,
-            }),
-          );
-        });
-        return;
-      }
-      if (code === 0) {
-        finish(() => {
-          resolve();
-        });
-        return;
-      }
-      const stderr = Buffer.concat(stderrChunks).toString("utf8");
-      finish(() => {
-        reject(
-          Object.assign(new Error(`Command failed: ${command}\n${stderr}`), {
-            code,
-            killed: child.killed,
-            signal: killSignal,
-            stderr,
-          }),
-        );
-      });
-    });
+  await execFileAsync(command, args, {
+    timeout: options.timeoutMs,
+    maxBuffer: options.maxProcessBufferBytes,
+    ...(signal === undefined ? {} : { signal }),
   });
 }
 
