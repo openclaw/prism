@@ -1,11 +1,8 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { deflateSync, inflateSync } from "node:zlib";
-
-const execFileAsync = promisify(execFile);
 
 type PhotonModule = typeof import("@silvia-odwyer/photon-node");
 type PhotonImage = InstanceType<PhotonModule["PhotonImage"]>;
@@ -1459,7 +1456,15 @@ async function loadOrientedPhotonImage(
       grayscaleAlpha.height,
     );
   }
-  validatePixelBudget({ width: decoded.get_width(), height: decoded.get_height() }, maxInputPixels);
+  try {
+    validatePixelBudget(
+      { width: decoded.get_width(), height: decoded.get_height() },
+      maxInputPixels,
+    );
+  } catch (error) {
+    decoded.free();
+    throw error;
+  }
   return { photon, image: autoOrient ? applyExifOrientation(photon, decoded, buffer) : decoded };
 }
 
@@ -1982,10 +1987,53 @@ async function runTool(
   options: ResolvedOptions,
   signal?: AbortSignal,
 ): Promise<void> {
-  await execFileAsync(command, args, {
-    timeout: options.timeoutMs,
-    maxBuffer: options.maxProcessBufferBytes,
-    ...(signal === undefined ? {} : { signal }),
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      fn();
+    };
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: options.timeoutMs,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const stderrChunks: Buffer[] = [];
+    let stderrBytes = 0;
+    child.stdout?.resume();
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes <= options.maxProcessBufferBytes) {
+        stderrChunks.push(chunk);
+      }
+    });
+    child.on("error", (error) => {
+      finish(() => {
+        reject(error);
+      });
+    });
+    child.on("close", (code, killSignal) => {
+      if (code === 0) {
+        finish(() => {
+          resolve();
+        });
+        return;
+      }
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
+      finish(() => {
+        reject(
+          Object.assign(new Error(`Command failed: ${command}\n${stderr}`), {
+            code,
+            killed: child.killed,
+            signal: killSignal,
+            stderr,
+          }),
+        );
+      });
+    });
   });
 }
 
@@ -2042,6 +2090,10 @@ function convertResizeArgs(native: NativeEncodeOptions): string[] {
 
 function convertStripArgs(): string[] {
   return ["-strip"];
+}
+
+function ffmpegCommonArgs(): string[] {
+  return ["-nostdin", "-y"];
 }
 
 function ffmpegStripArgs(): string[] {
@@ -2268,7 +2320,7 @@ async function externalToJpeg(
       await runTool(
         tool.command,
         [
-          "-y",
+          ...ffmpegCommonArgs(),
           "-i",
           input,
           ...ffmpegStripArgs(),
@@ -2349,7 +2401,7 @@ async function externalToWebp(
       await runTool(
         tool.command,
         [
-          "-y",
+          ...ffmpegCommonArgs(),
           "-i",
           input,
           ...ffmpegStripArgs(),
@@ -2414,7 +2466,7 @@ async function externalConvertToJpeg(
       await runTool(
         tool.command,
         [
-          "-y",
+          ...ffmpegCommonArgs(),
           "-i",
           input,
           ...ffmpegStripArgs(),
