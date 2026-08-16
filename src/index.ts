@@ -2002,9 +2002,9 @@ async function runTool(
       ...(signal === undefined ? {} : { signal }),
     });
     const stderrChunks: Buffer[] = [];
-    let capturedBytes = 0;
     let overflowed = false;
     const consume = (stream: NodeJS.ReadableStream | null, keep: boolean): void => {
+      let capturedBytes = 0;
       stream?.on("data", (chunk: Buffer) => {
         capturedBytes += chunk.length;
         if (capturedBytes > options.maxProcessBufferBytes) {

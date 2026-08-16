@@ -1306,6 +1306,35 @@ describe("Rastermill", () => {
     }
   });
 
+  it("keeps maxProcessBufferBytes independent per stream", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-buffer-per-stream-"));
+    try {
+      const log = path.join(tmp, "args.jsonl");
+      const script = path.join(tmp, "ffmpeg.js");
+      await writeImageToolScript(script, log, { jpeg: jpegWithAppMetadata(4, 2) });
+      await writeFile(
+        script,
+        `${await readFile(script, "utf8")}\nprocess.stderr.write("e".repeat(50));\nprocess.stdout.write("o".repeat(50));\n`,
+        "utf8",
+      );
+      const rastermill = createRastermill({
+        execution: "external",
+        maxProcessBufferBytes: 64,
+        commandResolver: (command) => (command === "ffmpeg" ? script : null),
+      });
+
+      await expect(
+        rastermill.encode(rgbaImage(8, 4), {
+          format: "jpeg",
+          resize: { maxSide: 4 },
+          quality: 70,
+        }),
+      ).resolves.toMatchObject({ format: "jpeg", width: 4, height: 2 });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("rejects external tools that exceed maxProcessBufferBytes even on exit 0", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-buffer-cap-"));
     try {

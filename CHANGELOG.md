@@ -4,6 +4,8 @@
 
 - Pass `-nostdin` and ignore stdin when spawning ffmpeg so auto and
   external encode fallback does not wait on a leftover pipe.
+- Apply `maxProcessBufferBytes` independently to stdout and stderr,
+  matching execFile's per-stream `maxBuffer`.
 - Free Photon images when decoded dimensions exceed the pixel budget.
 
 ## 0.3.2 - 2026-08-09
