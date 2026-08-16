@@ -1459,7 +1459,15 @@ async function loadOrientedPhotonImage(
       grayscaleAlpha.height,
     );
   }
-  validatePixelBudget({ width: decoded.get_width(), height: decoded.get_height() }, maxInputPixels);
+  try {
+    validatePixelBudget(
+      { width: decoded.get_width(), height: decoded.get_height() },
+      maxInputPixels,
+    );
+  } catch (error) {
+    decoded.free();
+    throw error;
+  }
   return { photon, image: autoOrient ? applyExifOrientation(photon, decoded, buffer) : decoded };
 }
 
@@ -2044,6 +2052,10 @@ function convertStripArgs(): string[] {
   return ["-strip"];
 }
 
+function ffmpegCommonArgs(): string[] {
+  return ["-nostdin", "-y"];
+}
+
 function ffmpegStripArgs(): string[] {
   return ["-map_metadata", "-1"];
 }
@@ -2268,7 +2280,7 @@ async function externalToJpeg(
       await runTool(
         tool.command,
         [
-          "-y",
+          ...ffmpegCommonArgs(),
           "-i",
           input,
           ...ffmpegStripArgs(),
@@ -2349,7 +2361,7 @@ async function externalToWebp(
       await runTool(
         tool.command,
         [
-          "-y",
+          ...ffmpegCommonArgs(),
           "-i",
           input,
           ...ffmpegStripArgs(),
@@ -2414,7 +2426,7 @@ async function externalConvertToJpeg(
       await runTool(
         tool.command,
         [
-          "-y",
+          ...ffmpegCommonArgs(),
           "-i",
           input,
           ...ffmpegStripArgs(),

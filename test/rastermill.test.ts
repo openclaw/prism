@@ -1288,6 +1288,7 @@ describe("Rastermill", () => {
         resize: { maxSide: 4 },
         quality: 60,
       });
+      await rastermill.encode(heifLikeImage({ width: 4, height: 2 }), { format: "jpeg" });
 
       expect(jpeg).toMatchObject({ format: "jpeg", width: 4, height: 2 });
       expect(webp).toMatchObject({ format: "webp", width: 4, height: 2 });
@@ -1295,10 +1296,14 @@ describe("Rastermill", () => {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as string[]);
+      expect(invocations).toHaveLength(3);
       expect(invocations[0]).toContain("-q:v");
       expect(invocations[0]).toContain("-map_metadata");
+      expect(invocations[0]).toContain("-nostdin");
       expect(invocations[1]).toContain("-quality");
       expect(invocations[1]).toContain("60");
+      expect(invocations[1]).toContain("-nostdin");
+      expect(invocations[2]).toContain("-nostdin");
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -1614,6 +1619,45 @@ describe("Rastermill", () => {
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("frees Photon images when decoded dimensions exceed the pixel budget", async () => {
+    vi.resetModules();
+    const free = vi.fn<() => void>();
+    vi.doMock("@silvia-odwyer/photon-node", () => {
+      class MockPhotonImage {
+        static new_from_byteslice = vi.fn<() => MockPhotonImage>(() => new MockPhotonImage());
+        free(): void {
+          free();
+        }
+        get_height(): number {
+          return 1000;
+        }
+        get_raw_pixels(): Uint8Array {
+          return new Uint8Array(4);
+        }
+        get_width(): number {
+          return 1000;
+        }
+      }
+      return {
+        PhotonImage: MockPhotonImage,
+        SamplingFilter: {
+          Lanczos3: 1,
+        },
+        crop: vi.fn<(image: MockPhotonImage) => MockPhotonImage>((image) => image),
+        resize: vi.fn<(image: MockPhotonImage) => MockPhotonImage>((image) => image),
+      };
+    });
+    const { createRastermill: createFreshRastermill, encodePngRgba: encodeFreshPngRgba } =
+      await import("../src/index.js");
+    const rastermill = createFreshRastermill({ limits: { inputPixels: 100 } });
+    const source = encodeFreshPngRgba(new Uint8Array(4 * 4 * 4), 4, 4);
+
+    await expect(rastermill.encode(source, { format: "jpeg" })).rejects.toMatchObject({
+      code: "RASTERMILL_INPUT_TOO_LARGE",
+    });
+    expect(free).toHaveBeenCalled();
   });
 
   it("rejects images over the configured pixel budget before decoding", async () => {
