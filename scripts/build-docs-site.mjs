@@ -38,8 +38,9 @@ const orderedPages = navSections.flatMap(([, rels]) =>
 );
 
 for (const page of pages) {
-  const html = markdownToHtml(page.markdown, page.rel);
-  const toc = tocFromHtml(html);
+  const headings = [];
+  const html = markdownToHtml(page.markdown, page.rel, headings);
+  const toc = tocFromHeadings(headings);
   const index = orderedPages.findIndex((candidate) => candidate.rel === page.rel);
   const prev = index > 0 ? orderedPages[index - 1] : null;
   const next = index >= 0 && index < orderedPages.length - 1 ? orderedPages[index + 1] : null;
@@ -77,7 +78,7 @@ function pageHref(targetRel, currentRel) {
   );
 }
 
-function markdownToHtml(markdown, currentRel) {
+function markdownToHtml(markdown, currentRel, headings = []) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const html = [];
   let paragraph = [];
@@ -104,7 +105,9 @@ function markdownToHtml(markdown, currentRel) {
   };
   const flushBlockquote = () => {
     if (!blockquote.length) return;
-    html.push(`<blockquote>${markdownToHtml(blockquote.join("\n"), currentRel)}</blockquote>`);
+    html.push(
+      `<blockquote>${markdownToHtml(blockquote.join("\n"), currentRel, headings)}</blockquote>`,
+    );
     blockquote = [];
   };
 
@@ -159,6 +162,9 @@ function markdownToHtml(markdown, currentRel) {
       const text = heading[2].trim();
       const id = slug(text);
       const body = inline(text, currentRel);
+      if (level === 2 || level === 3) {
+        headings.push({ level, id, text: inlineText(text) });
+      }
       html.push(
         level === 1
           ? `<h1 id="${id}">${body}</h1>`
@@ -258,6 +264,20 @@ function inline(text, currentRel) {
   );
 }
 
+function inlineText(text) {
+  const stash = [];
+  let out = text.replace(/`([^`]+)`/g, (_, code) => {
+    stash.push(code);
+    return stashPlaceholder(stash.length - 1);
+  });
+  out = out
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, "$1$2")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/<(https?:\/\/[^\s<>]+)>/g, "$1");
+  return replaceStash(out, stash);
+}
+
 function rewriteHref(href, currentRel) {
   if (/^(https?:|mailto:|tel:|#)/.test(href)) return href;
   const [raw, hash = ""] = href.split("#");
@@ -270,22 +290,9 @@ function rewriteHref(href, currentRel) {
   return href;
 }
 
-function tocFromHtml(html) {
-  const items = [];
-  const matcher = /<h([23]) id="([^"]+)">([\s\S]*?)<\/h[23]>/g;
-  let match;
-  while ((match = matcher.exec(html))) {
-    items.push({
-      level: Number(match[1]),
-      id: match[2],
-      text: match[3]
-        .replace(/<a class="anchor"[^>]*>.*?<\/a>/, "")
-        .replace(/<[^>]+>/g, "")
-        .trim(),
-    });
-  }
-  if (items.length < 2) return "";
-  return `<nav class="toc" aria-label="On this page"><h2>On this page</h2>${items
+function tocFromHeadings(headings) {
+  if (headings.length < 2) return "";
+  return `<nav class="toc" aria-label="On this page"><h2>On this page</h2>${headings
     .map((item) => `<a class="toc-l${item.level}" href="#${item.id}">${escapeHtml(item.text)}</a>`)
     .join("")}</nav>`;
 }
