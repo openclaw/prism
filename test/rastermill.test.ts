@@ -381,24 +381,34 @@ function grayscaleAlphaPng(width: number, height: number, alpha = 128): Buffer {
 
 function tiffImageFileDirectories(
   pages: readonly { width: number; height: number }[],
-  options?: { subIfd?: boolean },
+  options?: { subIfd?: boolean; byteOrder?: "II" | "MM"; dimensionType?: 3 | 4 },
 ): Buffer {
   const entryCount = options?.subIfd ? 3 : 2;
   const ifdSize = 2 + entryCount * 12 + 4;
   const buffer = Buffer.alloc(8 + ifdSize * pages.length);
-  buffer.write("II", 0, "ascii");
-  buffer.writeUInt16LE(42, 2);
-  buffer.writeUInt32LE(8, 4);
+  const byteOrder = options?.byteOrder ?? "II";
+  const dimensionType = options?.dimensionType ?? 4;
+  const writeU16 = (value: number, offset: number) =>
+    byteOrder === "II" ? buffer.writeUInt16LE(value, offset) : buffer.writeUInt16BE(value, offset);
+  const writeU32 = (value: number, offset: number) =>
+    byteOrder === "II" ? buffer.writeUInt32LE(value, offset) : buffer.writeUInt32BE(value, offset);
+  buffer.write(byteOrder, 0, "ascii");
+  writeU16(42, 2);
+  writeU32(8, 4);
 
   pages.forEach((page, pageIndex) => {
     const ifdOffset = 8 + pageIndex * ifdSize;
-    buffer.writeUInt16LE(entryCount, ifdOffset);
+    writeU16(entryCount, ifdOffset);
     const writeEntry = (entryIndex: number, tag: number, value: number) => {
       const offset = ifdOffset + 2 + entryIndex * 12;
-      buffer.writeUInt16LE(tag, offset);
-      buffer.writeUInt16LE(4, offset + 2);
-      buffer.writeUInt32LE(1, offset + 4);
-      buffer.writeUInt32LE(value, offset + 8);
+      writeU16(tag, offset);
+      writeU16(dimensionType, offset + 2);
+      writeU32(1, offset + 4);
+      if (dimensionType === 3) {
+        writeU16(value, offset + 8);
+      } else {
+        writeU32(value, offset + 8);
+      }
     };
     writeEntry(0, 256, page.width);
     writeEntry(1, 257, page.height);
@@ -406,7 +416,7 @@ function tiffImageFileDirectories(
       writeEntry(2, 330, 8);
     }
     const nextOffset = pageIndex + 1 < pages.length ? 8 + (pageIndex + 1) * ifdSize : 0;
-    buffer.writeUInt32LE(nextOffset, ifdOffset + 2 + entryCount * 12);
+    writeU32(nextOffset, ifdOffset + 2 + entryCount * 12);
   });
 
   return buffer;
@@ -1896,6 +1906,25 @@ describe("Rastermill", () => {
     expect(jpeg).toMatchObject({ format: "jpeg", width: 4, height: 4 });
   });
 
+  it.each([
+    { resize: { height: 4 }, width: 2, height: 4 },
+    { resize: { fit: "cover", width: 4, height: 4 }, width: 4, height: 4 },
+    { resize: { fit: "fill", width: 12, height: 6 }, width: 8, height: 16 },
+    { resize: { fit: "fill", width: 12, height: 6, enlarge: true }, width: 12, height: 6 },
+  ] as const)("resizes portrait images with %j", async ({ resize, width, height }) => {
+    const rastermill = createRastermill({ execution: "internal" });
+    const output = await rastermill.encode(rgbaImage(8, 16, 128), {
+      format: "png",
+      resize,
+    });
+    expect(output).toMatchObject({ format: "png", width, height });
+    expect(await rastermill.probe(output.data)).toMatchObject({ width, height });
+    expect(await rastermill.transparency(output.data)).toEqual({
+      hasAlphaChannel: true,
+      hasTransparentPixels: true,
+    });
+  });
+
   it("encodes WebP output", async () => {
     const rastermill = createRastermill();
 
@@ -1939,6 +1968,48 @@ describe("Rastermill", () => {
     const source = tiffImageFileDirectories([{ width: 8, height: 8 }], { subIfd: true });
 
     expect(readImageMetadataFromHeader(source)).toBeNull();
+  });
+
+  it.each([
+    { byteOrder: "II", dimensionType: 3 },
+    { byteOrder: "II", dimensionType: 4 },
+    { byteOrder: "MM", dimensionType: 3 },
+    { byteOrder: "MM", dimensionType: 4 },
+  ] as const)("reads linked TIFF pages with $byteOrder and type $dimensionType", (options) => {
+    const source = tiffImageFileDirectories(
+      [
+        { width: 8, height: 8 },
+        { width: 16, height: 12 },
+        { width: 4, height: 4 },
+      ],
+      options,
+    );
+    expect(readImageProbeFromHeader(source)).toMatchObject({
+      format: "tiff",
+      width: 16,
+      height: 12,
+    });
+  });
+
+  it.each([
+    { label: "cyclic IFD chain", offset: 34, bytes: [8, 0, 0, 0] },
+    { label: "IFD outside the file", offset: 4, bytes: [255, 0, 0, 0] },
+    { label: "truncated IFD table", offset: 8, bytes: [3, 0] },
+    { label: "missing width tag", offset: 10, bytes: [14, 1] },
+    { label: "missing height tag", offset: 22, bytes: [0, 1] },
+    { label: "unsupported dimension type", offset: 12, bytes: [5, 0] },
+    { label: "non-scalar dimension", offset: 14, bytes: [2, 0, 0, 0] },
+    { label: "zero width", offset: 18, bytes: [0, 0, 0, 0] },
+  ])("rejects TIFF with $label before native decoding", async ({ offset, bytes }) => {
+    const source = tiffImageFileDirectories([{ width: 8, height: 8 }]);
+    Buffer.from(bytes).copy(source, offset);
+    const commandResolver = vi.fn<() => null>(() => null);
+    const rastermill = createRastermill({ execution: "external", commandResolver });
+    expect(readImageProbeFromHeader(source)).toBeNull();
+    await expect(rastermill.encode(source, { format: "jpeg" })).rejects.toMatchObject({
+      code: "RASTERMILL_UNDECODABLE",
+    });
+    expect(commandResolver).not.toHaveBeenCalled();
   });
 
   it("reports unavailable external processing with structured errors", async () => {
