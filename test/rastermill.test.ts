@@ -183,16 +183,25 @@ function jpegWithAppMetadata(width: number, height: number): Buffer {
   return Buffer.concat([Buffer.from([0xff, 0xd8]), app1, jpegFrame(width, height)]);
 }
 
-function jpegWithExifOrientation(width: number, height: number, orientation: number): Buffer {
+function jpegWithExifOrientation(
+  width: number,
+  height: number,
+  orientation: number,
+  byteOrder: "II" | "MM" = "II",
+): Buffer {
   const tiff = Buffer.alloc(26);
-  tiff.write("II", 0, "ascii");
-  tiff.writeUInt16LE(42, 2);
-  tiff.writeUInt32LE(8, 4);
-  tiff.writeUInt16LE(1, 8);
-  tiff.writeUInt16LE(0x0112, 10);
-  tiff.writeUInt16LE(3, 12);
-  tiff.writeUInt32LE(1, 14);
-  tiff.writeUInt16LE(orientation, 18);
+  const writeU16 = (value: number, offset: number) =>
+    byteOrder === "II" ? tiff.writeUInt16LE(value, offset) : tiff.writeUInt16BE(value, offset);
+  const writeU32 = (value: number, offset: number) =>
+    byteOrder === "II" ? tiff.writeUInt32LE(value, offset) : tiff.writeUInt32BE(value, offset);
+  tiff.write(byteOrder, 0, "ascii");
+  writeU16(42, 2);
+  writeU32(8, 4);
+  writeU16(1, 8);
+  writeU16(0x0112, 10);
+  writeU16(3, 12);
+  writeU32(1, 14);
+  writeU16(orientation, 18);
   const app1Payload = Buffer.concat([Buffer.from("Exif\0\0", "binary"), tiff]);
   const app1 = Buffer.alloc(4);
   app1[0] = 0xff;
@@ -372,24 +381,34 @@ function grayscaleAlphaPng(width: number, height: number, alpha = 128): Buffer {
 
 function tiffImageFileDirectories(
   pages: readonly { width: number; height: number }[],
-  options?: { subIfd?: boolean },
+  options?: { subIfd?: boolean; byteOrder?: "II" | "MM"; dimensionType?: 3 | 4 },
 ): Buffer {
   const entryCount = options?.subIfd ? 3 : 2;
   const ifdSize = 2 + entryCount * 12 + 4;
   const buffer = Buffer.alloc(8 + ifdSize * pages.length);
-  buffer.write("II", 0, "ascii");
-  buffer.writeUInt16LE(42, 2);
-  buffer.writeUInt32LE(8, 4);
+  const byteOrder = options?.byteOrder ?? "II";
+  const dimensionType = options?.dimensionType ?? 4;
+  const writeU16 = (value: number, offset: number) =>
+    byteOrder === "II" ? buffer.writeUInt16LE(value, offset) : buffer.writeUInt16BE(value, offset);
+  const writeU32 = (value: number, offset: number) =>
+    byteOrder === "II" ? buffer.writeUInt32LE(value, offset) : buffer.writeUInt32BE(value, offset);
+  buffer.write(byteOrder, 0, "ascii");
+  writeU16(42, 2);
+  writeU32(8, 4);
 
   pages.forEach((page, pageIndex) => {
     const ifdOffset = 8 + pageIndex * ifdSize;
-    buffer.writeUInt16LE(entryCount, ifdOffset);
+    writeU16(entryCount, ifdOffset);
     const writeEntry = (entryIndex: number, tag: number, value: number) => {
       const offset = ifdOffset + 2 + entryIndex * 12;
-      buffer.writeUInt16LE(tag, offset);
-      buffer.writeUInt16LE(4, offset + 2);
-      buffer.writeUInt32LE(1, offset + 4);
-      buffer.writeUInt32LE(value, offset + 8);
+      writeU16(tag, offset);
+      writeU16(dimensionType, offset + 2);
+      writeU32(1, offset + 4);
+      if (dimensionType === 3) {
+        writeU16(value, offset + 8);
+      } else {
+        writeU32(value, offset + 8);
+      }
     };
     writeEntry(0, 256, page.width);
     writeEntry(1, 257, page.height);
@@ -397,7 +416,7 @@ function tiffImageFileDirectories(
       writeEntry(2, 330, 8);
     }
     const nextOffset = pageIndex + 1 < pages.length ? 8 + (pageIndex + 1) * ifdSize : 0;
-    buffer.writeUInt32LE(nextOffset, ifdOffset + 2 + entryCount * 12);
+    writeU32(nextOffset, ifdOffset + 2 + entryCount * 12);
   });
 
   return buffer;
@@ -505,6 +524,79 @@ describe("Rastermill", () => {
     expect(readImageProbeFromHeader(jpegWithExifOrientation(6, 4, 9))).toMatchObject({
       orientation: null,
     });
+  });
+
+  it.each([
+    { label: "invalid byte order", offset: 12, bytes: Buffer.from("XX") },
+    { label: "invalid TIFF magic", offset: 14, bytes: Buffer.from([0, 0]) },
+    { label: "IFD outside the APP1 segment", offset: 16, bytes: Buffer.from([255, 0, 0, 0]) },
+    { label: "truncated IFD entry", offset: 16, bytes: Buffer.from([24, 0, 0, 0]) },
+    { label: "missing orientation entry", offset: 20, bytes: Buffer.from([0, 0]) },
+    { label: "unrelated EXIF tag", offset: 22, bytes: Buffer.from([0, 1]) },
+    { label: "invalid zero orientation", offset: 30, bytes: Buffer.from([0, 0]) },
+  ])("ignores $label without losing JPEG dimensions", ({ offset, bytes }) => {
+    const input = jpegWithExifOrientation(6, 4, 6);
+    bytes.copy(input, offset);
+    expect(readImageProbeFromHeader(input)).toMatchObject({
+      format: "jpeg",
+      width: 6,
+      height: 4,
+      orientation: null,
+    });
+  });
+
+  it.each([
+    { orientation: 1, width: 3, height: 2, order: [0, 1, 2, 3, 4, 5] },
+    { orientation: 2, width: 3, height: 2, order: [2, 1, 0, 5, 4, 3] },
+    { orientation: 3, width: 3, height: 2, order: [5, 4, 3, 2, 1, 0] },
+    { orientation: 4, width: 3, height: 2, order: [3, 4, 5, 0, 1, 2] },
+    { orientation: 5, width: 2, height: 3, order: [0, 3, 1, 4, 2, 5] },
+    { orientation: 6, width: 2, height: 3, order: [3, 0, 4, 1, 5, 2] },
+    { orientation: 7, width: 2, height: 3, order: [5, 2, 4, 1, 3, 0] },
+    { orientation: 8, width: 2, height: 3, order: [2, 5, 1, 4, 0, 3] },
+  ])("orients JPEG pixels for EXIF $orientation in either byte order", async (expected) => {
+    const rastermill = createRastermill({ execution: "internal" });
+    const jpeg = await rastermill.encode(gradientRgbaImage(3, 2), {
+      format: "jpeg",
+      quality: 100,
+    });
+    const { PhotonImage } = await import("@silvia-odwyer/photon-node");
+    const decoded = PhotonImage.new_from_byteslice(jpeg.data);
+    const originalPixels = Array.from(decoded.get_raw_pixels());
+    decoded.free();
+    const expectedPixels = expected.order.flatMap((index) =>
+      originalPixels.slice(index * 4, index * 4 + 4),
+    );
+
+    for (const byteOrder of ["II", "MM"] as const) {
+      const header = jpegWithExifOrientation(3, 2, expected.orientation, byteOrder);
+      const annotated = Buffer.concat([
+        jpeg.data.subarray(0, 2),
+        header.subarray(2, 4 + header.readUInt16BE(4)),
+        jpeg.data.subarray(2),
+      ]);
+      expect(await rastermill.probe(annotated)).toMatchObject({
+        width: 3,
+        height: 2,
+        orientation: expected.orientation,
+      });
+      for (const autoOrient of [true, false]) {
+        const output = await rastermill.encode(annotated, { format: "png", autoOrient });
+        expect(output).toMatchObject({
+          width: autoOrient ? expected.width : 3,
+          height: autoOrient ? expected.height : 2,
+          metadata: "stripped",
+        });
+        const pixels = PhotonImage.new_from_byteslice(output.data);
+        try {
+          expect(Array.from(pixels.get_raw_pixels())).toEqual(
+            autoOrient ? expectedPixels : originalPixels,
+          );
+        } finally {
+          pixels.free();
+        }
+      }
+    }
   });
 
   it("reads and composes HEIF irot/imir transforms for the primary image", () => {
@@ -1741,6 +1833,27 @@ describe("Rastermill", () => {
     expect(() => createRastermill({ execution: "sideways" as never })).toThrow(/execution/);
   });
 
+  it.each([
+    { resize: { width: -1 } },
+    { resize: { height: 0 } },
+    { resize: { fit: "cover" as const, width: 4 } },
+    { resize: { fit: "fill" as const, height: 4 } },
+    { resize: { fit: "fill" as const, maxSide: 4 } },
+    { limits: {} },
+    { limits: { maxWidth: 0 } },
+    { limits: { maxHeight: Number.POSITIVE_INFINITY } },
+    { limits: { maxPixels: 1.5 } },
+    { maxBytes: 0 },
+    { maxBase64Bytes: -1 },
+  ])("rejects invalid encode dimensions and budgets: %j", async (options) => {
+    const commandResolver = vi.fn<() => null>(() => null);
+    const rastermill = createRastermill({ execution: "external", commandResolver });
+    await expect(
+      rastermill.encode(rgbaImage(8, 8), { format: "png", ...options }),
+    ).rejects.toMatchObject({ code: "RASTERMILL_BAD_OPTION" });
+    expect(commandResolver).not.toHaveBeenCalled();
+  });
+
   it("passes exact fill dimensions through to native backends", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-native-test-"));
     try {
@@ -1793,6 +1906,25 @@ describe("Rastermill", () => {
     expect(jpeg).toMatchObject({ format: "jpeg", width: 4, height: 4 });
   });
 
+  it.each([
+    { resize: { height: 4 }, width: 2, height: 4 },
+    { resize: { fit: "cover", width: 4, height: 4 }, width: 4, height: 4 },
+    { resize: { fit: "fill", width: 12, height: 6 }, width: 8, height: 16 },
+    { resize: { fit: "fill", width: 12, height: 6, enlarge: true }, width: 12, height: 6 },
+  ] as const)("resizes portrait images with %j", async ({ resize, width, height }) => {
+    const rastermill = createRastermill({ execution: "internal" });
+    const output = await rastermill.encode(rgbaImage(8, 16, 128), {
+      format: "png",
+      resize,
+    });
+    expect(output).toMatchObject({ format: "png", width, height });
+    expect(await rastermill.probe(output.data)).toMatchObject({ width, height });
+    expect(await rastermill.transparency(output.data)).toEqual({
+      hasAlphaChannel: true,
+      hasTransparentPixels: true,
+    });
+  });
+
   it("encodes WebP output", async () => {
     const rastermill = createRastermill();
 
@@ -1836,6 +1968,48 @@ describe("Rastermill", () => {
     const source = tiffImageFileDirectories([{ width: 8, height: 8 }], { subIfd: true });
 
     expect(readImageMetadataFromHeader(source)).toBeNull();
+  });
+
+  it.each([
+    { byteOrder: "II", dimensionType: 3 },
+    { byteOrder: "II", dimensionType: 4 },
+    { byteOrder: "MM", dimensionType: 3 },
+    { byteOrder: "MM", dimensionType: 4 },
+  ] as const)("reads linked TIFF pages with $byteOrder and type $dimensionType", (options) => {
+    const source = tiffImageFileDirectories(
+      [
+        { width: 8, height: 8 },
+        { width: 16, height: 12 },
+        { width: 4, height: 4 },
+      ],
+      options,
+    );
+    expect(readImageProbeFromHeader(source)).toMatchObject({
+      format: "tiff",
+      width: 16,
+      height: 12,
+    });
+  });
+
+  it.each([
+    { label: "cyclic IFD chain", offset: 34, bytes: [8, 0, 0, 0] },
+    { label: "IFD outside the file", offset: 4, bytes: [255, 0, 0, 0] },
+    { label: "truncated IFD table", offset: 8, bytes: [3, 0] },
+    { label: "missing width tag", offset: 10, bytes: [14, 1] },
+    { label: "missing height tag", offset: 22, bytes: [0, 1] },
+    { label: "unsupported dimension type", offset: 12, bytes: [5, 0] },
+    { label: "non-scalar dimension", offset: 14, bytes: [2, 0, 0, 0] },
+    { label: "zero width", offset: 18, bytes: [0, 0, 0, 0] },
+  ])("rejects TIFF with $label before native decoding", async ({ offset, bytes }) => {
+    const source = tiffImageFileDirectories([{ width: 8, height: 8 }]);
+    Buffer.from(bytes).copy(source, offset);
+    const commandResolver = vi.fn<() => null>(() => null);
+    const rastermill = createRastermill({ execution: "external", commandResolver });
+    expect(readImageProbeFromHeader(source)).toBeNull();
+    await expect(rastermill.encode(source, { format: "jpeg" })).rejects.toMatchObject({
+      code: "RASTERMILL_UNDECODABLE",
+    });
+    expect(commandResolver).not.toHaveBeenCalled();
   });
 
   it("reports unavailable external processing with structured errors", async () => {
