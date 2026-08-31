@@ -23,14 +23,13 @@ jobs:
       matrix:
         node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.3
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: ${{ matrix.node }}
-          cache: pnpm
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          cache: true
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm lint
