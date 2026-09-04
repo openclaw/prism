@@ -2,6 +2,9 @@
 
 ## 0.3.3 - Unreleased
 
+- Update pnpm, oxfmt, and oxlint for dependency installation and validation fixes.
+- Refresh the checked-in build with the merged ffmpeg stdin and Photon cleanup fixes, and check build drift in CI (thanks @SebTardif, #3).
+
 ## 0.3.2 - 2026-08-09
 
 **Highlight:** HEIF and AVIF images now keep their orientation. Rotated or

@@ -986,7 +986,13 @@ async function loadOrientedPhotonImage(buffer, maxInputPixels, autoOrient = true
         }
         decoded = new photon.PhotonImage(grayscaleAlpha.pixels, grayscaleAlpha.width, grayscaleAlpha.height);
     }
-    validatePixelBudget({ width: decoded.get_width(), height: decoded.get_height() }, maxInputPixels);
+    try {
+        validatePixelBudget({ width: decoded.get_width(), height: decoded.get_height() }, maxInputPixels);
+    }
+    catch (error) {
+        decoded.free();
+        throw error;
+    }
     return { photon, image: autoOrient ? applyExifOrientation(photon, decoded, buffer) : decoded };
 }
 function targetSize(image, resize) {
@@ -1431,6 +1437,9 @@ function convertResizeArgs(native) {
 function convertStripArgs() {
     return ["-strip"];
 }
+function ffmpegCommonArgs() {
+    return ["-nostdin", "-y"];
+}
 function ffmpegStripArgs() {
     return ["-map_metadata", "-1"];
 }
@@ -1622,7 +1631,7 @@ async function externalToJpeg(backend, buffer, native, options) {
         if (tool.flavor === "ffmpeg") {
             const qv = clampInteger(31 - quality * 0.29, 2, 31);
             await runTool(tool.command, [
-                "-y",
+                ...ffmpegCommonArgs(),
                 "-i",
                 input,
                 ...ffmpegStripArgs(),
@@ -1686,7 +1695,7 @@ async function externalToWebp(backend, buffer, native, options) {
         const output = workspace.path("out.webp");
         if (tool.flavor === "ffmpeg") {
             await runTool(tool.command, [
-                "-y",
+                ...ffmpegCommonArgs(),
                 "-i",
                 input,
                 ...ffmpegStripArgs(),
@@ -1736,7 +1745,7 @@ async function externalConvertToJpeg(backend, buffer, options, jpegOptions = {})
         }
         else if (tool.flavor === "ffmpeg") {
             await runTool(tool.command, [
-                "-y",
+                ...ffmpegCommonArgs(),
                 "-i",
                 input,
                 ...ffmpegStripArgs(),
