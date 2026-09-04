@@ -36,6 +36,9 @@ jobs:
       - run: pnpm format:check
       - run: pnpm test:coverage
       - run: pnpm build
+      - run: |
+          git diff --exit-code -- dist
+          test -z "$(git ls-files --others -- dist)"
       - run: pnpm docs:check
       - run: pnpm pack --pack-destination /tmp/rastermill-pack
       - run: pnpm package:smoke
