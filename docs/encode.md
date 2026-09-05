@@ -216,6 +216,8 @@ type ResizeOptions = {
   straight format conversion.
 
 By default the image is never enlarged; set `enlarge: true` to allow upscaling.
+Cover crops are centered on both axes, including with the Windows-native backend.
+Use `fill` when stretching to the requested dimensions is intentional.
 
 ## Metadata
 
