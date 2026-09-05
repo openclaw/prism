@@ -59,11 +59,11 @@
   "devDependencies": {
     "@types/node": "^22.20.1",
     "@typescript/native-preview": "7.0.0-dev.20260707.2",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^5.0.0",
     "oxfmt": "^0.66.0",
     "oxlint": "^1.81.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   },
   "engines": {
     "node": ">=22"

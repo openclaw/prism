@@ -6,8 +6,11 @@
 
 - Preserve image proportions with centered Windows-native `fit: "cover"` crops instead of stretching to the target box (thanks @SebTardif, #8).
 - Let Windows HEIC/AVIF resizing fall through to compatible native codecs instead of failing in GDI+ (thanks @SebTardif, #7).
-- Update pnpm, oxfmt, and oxlint for dependency installation and validation fixes.
-- Refresh the checked-in build with the merged ffmpeg stdin and Photon cleanup fixes, and check build drift in CI (thanks @SebTardif, #3).
+- Prevent FFmpeg fallback encodes from hanging on an unused stdin pipe (thanks @SebTardif, #3).
+- Free Photon images when decoded dimensions exceed the input pixel budget (thanks @SebTardif, #3).
+- Fix documentation table-of-contents labels and links for formatted headings (thanks @vincentkoc, #4).
+- Refresh TypeScript, Node 22 types, pnpm, formatting/linting tools, CI actions, and Vitest 5 validation.
+- Synchronize the checked-in package build with source fixes, check build drift in CI, and verify real image processing from an installed tarball.
 
 ## 0.3.2 - 2026-08-09
 
