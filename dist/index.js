@@ -1484,11 +1484,14 @@ param(
   [string]$Format,
   [int]$TargetWidth,
   [int]$TargetHeight,
+  [int]$ScaledWidth,
+  [int]$ScaledHeight,
   [int]$AutoOrient
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $source = [System.Drawing.Image]::FromFile($InputPath)
+$scaled = $null
 $bitmap = $null
 $graphics = $null
 try {
@@ -1510,12 +1513,14 @@ try {
   $width = $TargetWidth
   $height = $TargetHeight
   if ($width -le 0 -or $height -le 0) { throw 'Invalid image dimensions' }
+  $drawWidth = if ($ScaledWidth -gt 0) { $ScaledWidth } else { $width }
+  $drawHeight = if ($ScaledHeight -gt 0) { $ScaledHeight } else { $height }
   $pixelFormat = [System.Drawing.Imaging.PixelFormat]::Format24bppRgb
   if ($Format -eq 'png') {
     $pixelFormat = [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
   }
-  $bitmap = New-Object System.Drawing.Bitmap($width, $height, $pixelFormat)
-  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+  $scaled = New-Object System.Drawing.Bitmap($drawWidth, $drawHeight, $pixelFormat)
+  $graphics = [System.Drawing.Graphics]::FromImage($scaled)
   $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
   $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
   $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
@@ -1524,7 +1529,20 @@ try {
   } else {
     $graphics.Clear([System.Drawing.Color]::White)
   }
-  $graphics.DrawImage($source, 0, 0, $width, $height)
+  $graphics.DrawImage($source, 0, 0, $drawWidth, $drawHeight)
+  $graphics.Dispose()
+  $graphics = $null
+  $cropWidth = [Math]::Min($width, $drawWidth)
+  $cropHeight = [Math]::Min($height, $drawHeight)
+  $cropX = [Math]::Max(0, [int][Math]::Floor(($drawWidth - $cropWidth) / 2))
+  $cropY = [Math]::Max(0, [int][Math]::Floor(($drawHeight - $cropHeight) / 2))
+  if ($cropX -eq 0 -and $cropY -eq 0 -and $cropWidth -eq $drawWidth -and $cropHeight -eq $drawHeight) {
+    $bitmap = $scaled
+    $scaled = $null
+  } else {
+    $cropRect = New-Object System.Drawing.Rectangle($cropX, $cropY, $cropWidth, $cropHeight)
+    $bitmap = $scaled.Clone($cropRect, $pixelFormat)
+  }
   if ($Format -eq 'png') {
     $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
   } else {
@@ -1546,6 +1564,7 @@ try {
 } finally {
   if ($null -ne $graphics) { $graphics.Dispose() }
   if ($null -ne $bitmap) { $bitmap.Dispose() }
+  if ($null -ne $scaled) { $scaled.Dispose() }
   $source.Dispose()
 }
 `;
@@ -1572,6 +1591,8 @@ async function windowsNativeResize(tool, buffer, native, format, options) {
             format,
             String(native.target.width),
             String(native.target.height),
+            String(native.scaledTarget.width),
+            String(native.scaledTarget.height),
             native.autoOrient === false ? "0" : "1",
         ], options, native.signal);
         return await workspace.read(outputName);

@@ -43,6 +43,50 @@ function gradientRgbaImage(width: number, height: number): Buffer {
   return encodePngRgba(pixels, width, height);
 }
 
+function horizontalBandRgbaImage(
+  width: number,
+  height: number,
+  bands: ReadonlyArray<{ columns: number; r: number; g: number; b: number }>,
+): Buffer {
+  const pixels = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    let x = 0;
+    for (const band of bands) {
+      for (let column = 0; column < band.columns; column += 1, x += 1) {
+        const offset = (y * width + x) * 4;
+        pixels[offset] = band.r;
+        pixels[offset + 1] = band.g;
+        pixels[offset + 2] = band.b;
+        pixels[offset + 3] = 255;
+      }
+    }
+  }
+  return encodePngRgba(pixels, width, height);
+}
+
+function meanRgb(
+  pixels: Uint8Array,
+  width: number,
+  x0: number,
+  x1: number,
+  height: number,
+): { r: number; g: number; b: number } {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
+      const offset = (y * width + x) * 4;
+      r += pixels[offset] ?? 0;
+      g += pixels[offset + 1] ?? 0;
+      b += pixels[offset + 2] ?? 0;
+      count += 1;
+    }
+  }
+  return { r: r / count, g: g / count, b: b / count };
+}
+
 function losslessWebpHeader(width: number, height: number, hasAlpha: boolean): Buffer {
   const bits = (width - 1) | ((height - 1) << 14) | (hasAlpha ? 1 << 28 : 0);
   const payload = Buffer.alloc(5);
@@ -2032,6 +2076,44 @@ describe("Rastermill", () => {
 
     expect(jpeg).toMatchObject({ format: "jpeg", width: 4, height: 4 });
   });
+
+  it.runIf(process.platform === "win32")(
+    "center-crops windows-native cover resize instead of stretching",
+    async () => {
+      const rastermill = createRastermill({
+        execution: "external",
+        commandResolver: (command) => (command === "powershell" ? "powershell" : null),
+      });
+      const source = horizontalBandRgbaImage(200, 100, [
+        { columns: 50, r: 255, g: 0, b: 0 },
+        { columns: 100, r: 0, g: 255, b: 0 },
+        { columns: 50, r: 0, g: 0, b: 255 },
+      ]);
+
+      const jpeg = await rastermill.encode(source, {
+        format: "jpeg",
+        quality: 95,
+        resize: { fit: "cover", width: 100, height: 100 },
+      });
+
+      expect(jpeg).toMatchObject({ format: "jpeg", width: 100, height: 100 });
+      const { PhotonImage } = await import("@silvia-odwyer/photon-node");
+      const decoded = PhotonImage.new_from_byteslice(jpeg.data);
+      try {
+        const pixels = decoded.get_raw_pixels();
+        const left = meanRgb(pixels, 100, 0, 10, 100);
+        const right = meanRgb(pixels, 100, 90, 100, 100);
+        expect(left.g).toBeGreaterThan(160);
+        expect(left.r).toBeLessThan(80);
+        expect(left.b).toBeLessThan(80);
+        expect(right.g).toBeGreaterThan(160);
+        expect(right.r).toBeLessThan(80);
+        expect(right.b).toBeLessThan(80);
+      } finally {
+        decoded.free();
+      }
+    },
+  );
 
   it.each([
     { resize: { height: 4 }, width: 2, height: 4 },
