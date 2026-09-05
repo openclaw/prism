@@ -234,6 +234,30 @@ async function writeImageToolScript(
   await chmod(script, 0o755);
 }
 
+async function writeHostCommand(tmp: string, name: string, lines: string[]): Promise<string> {
+  const js = path.join(tmp, `${name}.js`);
+  await writeFile(js, ["#!/usr/bin/env node", ...lines].join("\n"), "utf8");
+  await chmod(js, 0o755);
+  if (process.platform !== "win32") {
+    return js;
+  }
+  const cmd = path.join(tmp, `${name}.cmd`);
+  await writeFile(cmd, `@echo off\r\n"${process.execPath}" "${js}" %*\r\n`, "utf8");
+  return cmd;
+}
+
+async function withStubbedPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { configurable: true, value: platform });
+  try {
+    return await fn();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(process, "platform", descriptor);
+    }
+  }
+}
+
 function isoBox(type: string, payload: Buffer): Buffer {
   const box = Buffer.alloc(8 + payload.length);
   box.writeUInt32BE(box.length, 0);
@@ -1424,6 +1448,109 @@ describe("Rastermill", () => {
       expect(args).toContain("-auto-orient");
       expect(args).toContain("-quality");
       expect(args).toContain("91");
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("skips Windows native HEIC/AVIF resize so later backends can run", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-win-heic-resize-"));
+    const hostPlatform = process.platform;
+    try {
+      const powershellLog = path.join(tmp, "powershell.jsonl");
+      const magickLog = path.join(tmp, "magick.jsonl");
+      const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+      const windowsPowershell = path.join(
+        systemRoot,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const powershell =
+        hostPlatform === "win32"
+          ? windowsPowershell
+          : await writeHostCommand(tmp, "powershell", [
+              "const fs = require('node:fs');",
+              `fs.appendFileSync(${JSON.stringify(powershellLog)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+              'console.error(\'Exception calling "FromFile" with "1" argument(s): "Out of memory."\');',
+              "process.exit(1);",
+            ]);
+      const magick = await writeHostCommand(tmp, "magick", [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.appendFileSync(${JSON.stringify(magickLog)}, JSON.stringify(args) + '\\n');`,
+        `const jpeg = ${JSON.stringify(jpegWithAppMetadata(5, 4).toString("base64"))};`,
+        "fs.writeFileSync(args.at(-1), Buffer.from(jpeg, 'base64'));",
+      ]);
+      const heic = heifLikeImage({ width: 10, height: 8 });
+      const avif = Buffer.from(heic);
+      avif.write("avif", 8, "ascii");
+
+      await withStubbedPlatform("win32", async () => {
+        const isolated = createRastermill({
+          execution: "external",
+          commandResolver: (command) => (command === "powershell" ? powershell : null),
+        });
+        const isolatedError = await isolated
+          .encode(heic, { format: "jpeg", resize: { maxSide: 5 } })
+          .then(
+            () => {
+              throw new Error("expected isolated Windows native HEIC resize to fail");
+            },
+            (error: unknown) => error,
+          );
+        const isolatedAvifError = await isolated
+          .encode(avif, { format: "jpeg", resize: { maxSide: 5 } })
+          .then(
+            () => {
+              throw new Error("expected isolated Windows native AVIF resize to fail");
+            },
+            (error: unknown) => error,
+          );
+        expect(isolatedError).toMatchObject({
+          code: "RASTERMILL_IMAGE_PROCESSOR_UNAVAILABLE",
+        });
+        expect(isolatedAvifError).toMatchObject({
+          code: "RASTERMILL_IMAGE_PROCESSOR_UNAVAILABLE",
+        });
+        expect(isRastermillUnavailableError(isolatedError)).toBe(true);
+        const isolatedDetail = isRastermillUnavailableError(isolatedError)
+          ? [isolatedError.message, ...isolatedError.causes.map(String)].join("\n").toLowerCase()
+          : "";
+        expect(isolatedDetail).toContain("does not convert heic");
+        expect(isolatedDetail).not.toContain("out of memory");
+        expect(isolatedDetail).not.toContain("parameter is not valid");
+
+        if (hostPlatform === "win32") {
+          return;
+        }
+
+        const rastermill = createRastermill({
+          execution: "external",
+          commandResolver: (command) => {
+            if (command === "powershell") {
+              return powershell;
+            }
+            if (command === "magick") {
+              return magick;
+            }
+            return null;
+          },
+        });
+        const heicResult = await rastermill.encode(heic, {
+          format: "jpeg",
+          resize: { maxSide: 5 },
+        });
+        const avifResult = await rastermill.encode(avif, {
+          format: "jpeg",
+          resize: { maxSide: 5 },
+        });
+        expect(heicResult).toMatchObject({ format: "jpeg", width: 5, height: 4 });
+        expect(avifResult).toMatchObject({ format: "jpeg", width: 5, height: 4 });
+        expect(existsSync(powershellLog)).toBe(false);
+        expect((await readFile(magickLog, "utf8")).trim().split("\n")).toHaveLength(2);
+      });
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

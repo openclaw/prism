@@ -2181,6 +2181,10 @@ async function windowsNativeResize(
   format: "jpeg" | "png",
   options: ResolvedOptions,
 ): Promise<Buffer> {
+  const probe = readImageProbeFromHeader(buffer);
+  if (probe?.format === "heif" || probe?.format === "avif") {
+    throw new Error("Windows native image backend does not convert HEIC to JPEG");
+  }
   return await withImageTemp(options, async (workspace) => {
     const scriptPath = await workspace.write(
       "resize.ps1",

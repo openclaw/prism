@@ -1,0 +1,35 @@
+name: Windows codec fallback
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  fallback:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Install FFmpeg codecs
+        run: |
+          if (!(Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed' }
+          }
+          ffmpeg -version
+      - run: node scripts/windows-fallback-smoke.mjs

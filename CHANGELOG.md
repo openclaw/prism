@@ -2,6 +2,7 @@
 
 ## 0.3.3 - Unreleased
 
+- Let Windows HEIC/AVIF resizing fall through to compatible native codecs instead of failing in GDI+ (thanks @SebTardif, #7).
 - Update pnpm, oxfmt, and oxlint for dependency installation and validation fixes.
 - Refresh the checked-in build with the merged ffmpeg stdin and Photon cleanup fixes, and check build drift in CI (thanks @SebTardif, #3).
 
