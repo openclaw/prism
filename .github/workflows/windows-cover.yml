@@ -1,0 +1,29 @@
+name: Windows native resizing
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  cover:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec vitest run test/rastermill.test.ts -t "center-crops windows-native"
+      - run: node scripts/windows-cover-smoke.mjs

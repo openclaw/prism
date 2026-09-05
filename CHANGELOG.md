@@ -2,7 +2,7 @@
 
 ## 0.3.3 - Unreleased
 
-- Windows native `fit: "cover"` now scales to cover and center-crops instead of stretching to the target box (thanks @SebTardif).
+- Preserve image proportions with centered Windows-native `fit: "cover"` crops instead of stretching to the target box (thanks @SebTardif, #8).
 - Let Windows HEIC/AVIF resizing fall through to compatible native codecs instead of failing in GDI+ (thanks @SebTardif, #7).
 - Update pnpm, oxfmt, and oxlint for dependency installation and validation fixes.
 - Refresh the checked-in build with the merged ffmpeg stdin and Photon cleanup fixes, and check build drift in CI (thanks @SebTardif, #3).
