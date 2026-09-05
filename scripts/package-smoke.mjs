@@ -45,7 +45,31 @@ try {
         throw new Error(\`missing export: \${name}\`);
       }
     }
-    console.log("package smoke ok");
+    const assert = (await import("node:assert/strict")).default;
+    const input = rastermill.encodePngRgba(new Uint8Array([
+      255, 0, 0, 255, 0, 255, 0, 128,
+      0, 0, 255, 255, 255, 255, 255, 255,
+    ]), 2, 2);
+    const client = rastermill.createRastermill({ execution: "internal" });
+    const info = await client.probe(input);
+    assert.equal(info.format, "png");
+    assert.equal(info.width, 2);
+    assert.equal(info.height, 2);
+    const transparency = await client.transparency(input);
+    assert.equal(transparency.hasAlphaChannel, true);
+    assert.equal(transparency.hasTransparentPixels, true);
+    const jpeg = await client.encode(input, {
+      format: "jpeg",
+      resize: { maxSide: 1 },
+    });
+    assert.equal(jpeg.width, 1);
+    assert.equal(jpeg.height, 1);
+    assert.equal(jpeg.metadata, "stripped");
+    const encoded = await client.probe(jpeg.data);
+    assert.equal(encoded.format, "jpeg");
+    assert.equal(encoded.width, 1);
+    assert.equal(encoded.height, 1);
+    console.log("package smoke ok: probe, transparency, and PNG-to-JPEG resize");
   `;
   const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", smoke], {
     cwd: workspace,
