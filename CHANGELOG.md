@@ -2,6 +2,7 @@
 
 ## 0.3.3 - Unreleased
 
+- Skip the Windows native backend for HEIC/AVIF resize so later backends can run. GDI+ `FromFile` used to fail with `Out of memory` or `Parameter is not valid`, which is not treated as unavailable, so ImageMagick and ffmpeg never ran. Thanks @SebTardif.
 - Update pnpm, oxfmt, and oxlint for dependency installation and validation fixes.
 - Refresh the checked-in build with the merged ffmpeg stdin and Photon cleanup fixes, and check build drift in CI (thanks @SebTardif, #3).
 

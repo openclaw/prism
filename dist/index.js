@@ -1550,6 +1550,10 @@ try {
 }
 `;
 async function windowsNativeResize(tool, buffer, native, format, options) {
+    const probe = readImageProbeFromHeader(buffer);
+    if (probe?.format === "heif" || probe?.format === "avif") {
+        throw new Error("Windows native image backend does not convert HEIC to JPEG");
+    }
     return await withImageTemp(options, async (workspace) => {
         const scriptPath = await workspace.write("resize.ps1", Buffer.from(WINDOWS_NATIVE_RESIZE_SCRIPT, "utf8"));
         const input = await workspace.write("in.img", buffer);
