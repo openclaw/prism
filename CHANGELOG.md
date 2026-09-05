@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.3 - Unreleased
+## 0.3.3 - 2026-09-05
 
 **Highlights:** Windows resizing preserves image proportions for cover crops and reaches compatible codecs for HEIC/AVIF input.
 
