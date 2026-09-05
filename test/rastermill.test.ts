@@ -2079,6 +2079,8 @@ describe("Rastermill", () => {
 
   it.runIf(process.platform === "win32")(
     "center-crops windows-native cover resize instead of stretching",
+    // Let the backend's 20-second timeout complete before the test deadline.
+    { timeout: 30_000 },
     async () => {
       const rastermill = createRastermill({
         execution: "external",
