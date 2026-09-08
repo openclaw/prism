@@ -59,11 +59,11 @@ metadata and reports `metadata: "stripped"`.
 
 ## Backends
 
-`execution: "auto"` uses Photon in-process for supported formats, then native
-tools when a format needs external codec support. Use `execution: "internal"`
-to forbid child processes, or `execution: "external"` to use only native tools.
-WebP quality control requires an external backend because Photon's WebP encoder
-does not accept a quality setting.
+`execution: "auto"` uses Photon in-process for PNG, JPEG, GIF, WebP, and BMP
+input, then native tools when a format needs external codec support. Use
+`execution: "internal"` to forbid child processes, or `execution: "external"`
+to use only native tools. WebP quality control requires an external backend
+because Photon's WebP encoder does not accept a quality setting.
 
 Rastermill refuses to decode images with unknown dimensions, images larger than the
 configured input pixel budget, or resize targets larger than the configured

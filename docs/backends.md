@@ -11,7 +11,7 @@ Use `execution: "internal"` to forbid child processes. Use
 
 | Backend | Engine | Notes |
 | --- | --- | --- |
-| `photon` | In-process WASM ([Photon](https://github.com/silvia-odwyer/photon)) | Fast, no external process. Decodes PNG, JPEG, GIF, WebP. Encodes JPEG, PNG, WebP. Cannot decode HEIC/AVIF, cannot set WebP quality, and exposes no EXIF/GPS/ICC/XMP metadata API. |
+| `photon` | In-process WASM ([Photon](https://github.com/silvia-odwyer/photon)) | Fast, no external process. Decodes PNG, JPEG, GIF, WebP, and BMP for encoding. Encodes JPEG, PNG, WebP. Cannot decode HEIC/AVIF, cannot set WebP quality, and exposes no EXIF/GPS/ICC/XMP metadata API. |
 | `sips` | macOS `/usr/bin/sips` | macOS only. JPEG output (incl. HEIC/AVIF → JPEG); not used for PNG. |
 | `windows-native` | Windows PowerShell + `System.Drawing` | Windows only. JPEG and PNG; HEIC/AVIF inputs skip this backend, including when resizing, so later tools can decode them. |
 | `imagemagick` | `magick` (or `convert`) | Broad format support, including HEIC/AVIF where codecs are installed. |
@@ -78,6 +78,6 @@ createRastermill({ execution: "internal" }); // no child processes
 createRastermill({ execution: "external" }); // native tools only
 ```
 
-`execution: "internal"` currently supports PNG, JPEG, GIF, and WebP input through
-Photon. It cannot decode HEIC/AVIF, so those operations fail with
+With `execution: "internal"`, `encode` supports PNG, JPEG, GIF, WebP, and BMP
+input through Photon. It cannot decode HEIC/AVIF, so those operations fail with
 `RastermillUnavailableError` instead of spawning `sips`, ImageMagick, or ffmpeg.
