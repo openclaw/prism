@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.4 - Unreleased
+## 0.3.4 - 2026-09-08
 
 - Decode supported BMP input through the existing bounded Photon encode path.
   Validate embedded JPEG/PNG payloads through Photon before native fallback,
