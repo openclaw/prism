@@ -697,14 +697,42 @@ export function readImageProbeFromHeader(input) {
     }
     return null;
 }
-function hasPhotonDecodableHeader(buffer) {
+function readBmpEncodeDisposition(buffer) {
+    if (buffer.length < 2 || buffer.toString("ascii", 0, 2) !== "BM")
+        return null;
+    if (buffer.length < 18)
+        return "invalid";
+    const fileSize = buffer.readUInt32LE(2);
+    const dataOffset = buffer.readUInt32LE(10);
+    const dibHeaderSize = buffer.readUInt32LE(14);
+    if (14 + dibHeaderSize > buffer.length ||
+        dataOffset < 14 + dibHeaderSize ||
+        fileSize <= dataOffset ||
+        fileSize > buffer.length)
+        return "invalid";
+    if (dibHeaderSize === 12)
+        return "photon";
+    if (dibHeaderSize < 40)
+        return "invalid";
+    const compression = buffer.readUInt32LE(30);
+    if ([0, 1, 2, 3].includes(compression))
+        return [40, 52, 56, 108, 124].includes(dibHeaderSize) ? "photon" : "external";
+    if (compression !== 4 && compression !== 5)
+        return [6, 11, 12, 13].includes(compression) ? "external" : "invalid";
+    const imageSize = buffer.readUInt32LE(34);
+    const payloadEnd = dataOffset + (imageSize || fileSize - dataOffset);
+    return payloadEnd <= fileSize ? buffer.subarray(dataOffset, payloadEnd) : "invalid";
+}
+function hasPhotonDecodableHeader(buffer, operation) {
+    const bmp = operation === "encode" ? readBmpEncodeDisposition(buffer) : null;
     return (readPngMetadata(buffer) !== null ||
         readGifMetadata(buffer) !== null ||
         readWebpMetadata(buffer) !== null ||
-        readJpegMetadata(buffer) !== null);
+        readJpegMetadata(buffer) !== null ||
+        bmp === "photon");
 }
 function assertPhotonDecodableHeader(buffer, operation) {
-    if (!hasPhotonDecodableHeader(buffer)) {
+    if (!hasPhotonDecodableHeader(buffer, operation)) {
         throw new RastermillUnavailableError(operation, "Photon cannot decode this image format");
     }
 }
@@ -1265,25 +1293,28 @@ function backendsForFormat(format, execution, options = {}) {
     }
     return usableCandidates;
 }
-function isBackendUnavailable(error) {
+function classifyBackendError(error) {
     if (error instanceof RastermillUnavailableError) {
-        return true;
+        return "unavailable";
     }
     if (error instanceof RastermillError) {
-        return false;
+        return "fatal";
     }
     const messages = [];
     let current = error;
     while (current instanceof Error) {
         messages.push(current.message);
+        if ("stderr" in current && typeof current.stderr === "string")
+            messages.push(current.stderr);
         current = current.cause;
     }
     const detail = messages.join("\n").toLowerCase();
-    return (detail.includes("cannot decode") ||
+    if (detail.includes("cannot decode") ||
         detail.includes("decode delegate") ||
         detail.includes("decoder not found") ||
         detail.includes("not available") ||
         detail.includes("command not found") ||
+        detail.includes("cannot extract image from file") ||
         detail.includes("does not convert heic") ||
         detail.includes("enoent") ||
         detail.includes("photon did not expose") ||
@@ -1291,9 +1322,20 @@ function isBackendUnavailable(error) {
         detail.includes('cannot find package "@silvia-odwyer/photon-node"') ||
         detail.includes("cannot find module '@silvia-odwyer/photon-node'") ||
         detail.includes('cannot find module "@silvia-odwyer/photon-node"') ||
-        detail.includes("no images defined") ||
         detail.includes("support for this compression format has not been built in") ||
-        detail.includes("unsupported image format"));
+        detail.includes("unsupported image format"))
+        return "unavailable";
+    return [
+        "corrupt image",
+        "improper image header",
+        "insufficient image data",
+        "invalid data found when processing input",
+        "no images defined",
+        "unexpected end-of-file",
+        "unrecognized compression",
+    ].some((message) => detail.includes(message))
+        ? "undecodable"
+        : "fatal";
 }
 async function runWithBackends(format, options, backendOptions, fn) {
     const errors = [];
@@ -1304,9 +1346,14 @@ async function runWithBackends(format, options, backendOptions, fn) {
         }
         catch (error) {
             errors.push(error);
-            if (!isBackendUnavailable(error)) {
-                throw error;
-            }
+            const classification = classifyBackendError(error);
+            if (classification === "unavailable")
+                continue;
+            if (backend !== "photon" && classification === "undecodable")
+                throw rastermillError("RASTERMILL_UNDECODABLE", "Native image decoder rejected the input", {
+                    cause: error,
+                });
+            throw error;
         }
     }
     throw new RastermillUnavailableError("encode", `Image processor unavailable for ${format} encoding; tried: ${backends.join(", ")}`, errors);
@@ -2115,7 +2162,7 @@ function createProcessor(options) {
                 if (error instanceof RastermillUnavailableError) {
                     throw error;
                 }
-                if (isBackendUnavailable(error)) {
+                if (classifyBackendError(error) === "unavailable") {
                     throw new RastermillUnavailableError("transparency", "Image processor unavailable for transparency inspection; tried: photon", [error]);
                 }
                 throw error;
@@ -2156,6 +2203,21 @@ function createProcessor(options) {
             const buffer = toBuffer(input);
             const header = readImageProbeFromHeader(buffer);
             const metadata = assertHeaderPixelBudget(buffer, options.maxInputPixels);
+            const bmpDisposition = readBmpEncodeDisposition(buffer);
+            if (bmpDisposition === "invalid") {
+                throw rastermillError("RASTERMILL_UNDECODABLE", "Invalid or truncated BMP input");
+            }
+            if (Buffer.isBuffer(bmpDisposition) && options.execution !== "external") {
+                try {
+                    const { image } = await loadOrientedPhotonImage(bmpDisposition, options.maxInputPixels, false);
+                    image.free();
+                }
+                catch (error) {
+                    if (options.execution !== "auto" || classifyBackendError(error) !== "unavailable") {
+                        throw error;
+                    }
+                }
+            }
             const orientedMetadata = autoOrientedMetadata(buffer, metadata, encodeOptions.autoOrient !== false);
             const resize = normalizeResizeOptions(encodeOptions.resize, orientedMetadata);
             assertOutputPixelBudget(orientedMetadata, resize, options.maxOutputPixels);

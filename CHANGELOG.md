@@ -2,6 +2,10 @@
 
 ## 0.3.4 - Unreleased
 
+- Decode supported BMP input through the existing bounded Photon encode path.
+  Validate embedded JPEG/PNG payloads through Photon before native fallback,
+  and report native decoder rejections as undecodable input.
+
 ## 0.3.3 - 2026-09-05
 
 **Highlights:** Windows resizing preserves image proportions for cover crops and reaches compatible codecs for HEIC/AVIF input.

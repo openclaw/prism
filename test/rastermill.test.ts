@@ -18,6 +18,21 @@ import {
   transparency as defaultTransparency,
 } from "../src/index.js";
 
+function findExecutable(command: string): string | null {
+  for (const directory of process.env.PATH?.split(path.delimiter) ?? []) {
+    const candidate = path.join(directory, command);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+const imageMagick =
+  process.platform === "win32"
+    ? null
+    : (["magick", "convert"]
+        .map((command) => ({ command, path: findExecutable(command) }))
+        .find((candidate) => candidate.path !== null) ?? null);
+
 function rgbaImage(width: number, height: number, alpha = 255): Buffer {
   const pixels = new Uint8Array(width * height * 4);
   for (let offset = 0; offset < pixels.length; offset += 4) {
@@ -408,6 +423,31 @@ function bmpHeader(width: number, height: number): Buffer {
   return buffer;
 }
 
+function bmpImage(width: number, height: number): Buffer {
+  const rowBytes = Math.ceil((width * 3) / 4) * 4;
+  const pixels = Buffer.alloc(rowBytes * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (height - 1 - y) * rowBytes + x * 3;
+      pixels[offset] = (x * 70) & 0xff;
+      pixels[offset + 1] = (y * 90) & 0xff;
+      pixels[offset + 2] = 0xc0;
+    }
+  }
+  const buffer = Buffer.alloc(54 + pixels.length);
+  buffer.write("BM", 0, "ascii");
+  buffer.writeUInt32LE(buffer.length, 2);
+  buffer.writeUInt32LE(54, 10);
+  buffer.writeUInt32LE(40, 14);
+  buffer.writeInt32LE(width, 18);
+  buffer.writeInt32LE(height, 22);
+  buffer.writeUInt16LE(1, 26);
+  buffer.writeUInt16LE(24, 28);
+  buffer.writeUInt32LE(pixels.length, 34);
+  pixels.copy(buffer, 54);
+  return buffer;
+}
+
 function bmpHeaderWithDibSize(size: number): Buffer {
   const buffer = Buffer.alloc(26);
   buffer.write("BM", 0, "ascii");
@@ -421,6 +461,53 @@ function bmpCoreHeader(width: number, height: number): Buffer {
   buffer.writeUInt32LE(12, 14);
   buffer.writeUInt16LE(width, 18);
   buffer.writeUInt16LE(height, 20);
+  return buffer;
+}
+
+function bmpCoreImage(width: number, height: number): Buffer {
+  const rowBytes = Math.ceil((width * 3) / 4) * 4;
+  const pixels = Buffer.alloc(rowBytes * height);
+  const buffer = Buffer.alloc(26 + pixels.length);
+  buffer.write("BM", 0, "ascii");
+  buffer.writeUInt32LE(buffer.length, 2);
+  buffer.writeUInt32LE(26, 10);
+  buffer.writeUInt32LE(12, 14);
+  buffer.writeUInt16LE(width, 18);
+  buffer.writeUInt16LE(height, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt16LE(24, 24);
+  pixels.copy(buffer, 26);
+  return buffer;
+}
+
+function embeddedBmp(compression: 4 | 5, width: number, height: number, payload: Buffer) {
+  const buffer = Buffer.alloc(54 + payload.length);
+  buffer.write("BM", 0, "ascii");
+  buffer.writeUInt32LE(buffer.length, 2);
+  buffer.writeUInt32LE(54, 10);
+  buffer.writeUInt32LE(40, 14);
+  buffer.writeInt32LE(width, 18);
+  buffer.writeInt32LE(height, 22);
+  buffer.writeUInt16LE(1, 26);
+  buffer.writeUInt32LE(compression, 30);
+  buffer.writeUInt32LE(payload.length, 34);
+  payload.copy(buffer, 54);
+  return buffer;
+}
+
+function unsupportedBmp(compression: 6 | 11 | 12 | 13, payload: Buffer, bitCount: 4 | 8 | 16 | 32) {
+  const buffer = Buffer.alloc(54 + payload.length);
+  buffer.write("BM", 0, "ascii");
+  buffer.writeUInt32LE(buffer.length, 2);
+  buffer.writeUInt32LE(54, 10);
+  buffer.writeUInt32LE(40, 14);
+  buffer.writeInt32LE(2, 18);
+  buffer.writeInt32LE(2, 22);
+  buffer.writeUInt16LE(1, 26);
+  buffer.writeUInt16LE(bitCount, 28);
+  buffer.writeUInt32LE(compression, 30);
+  buffer.writeUInt32LE(payload.length, 34);
+  payload.copy(buffer, 54);
   return buffer;
 }
 
@@ -837,6 +924,255 @@ describe("Rastermill", () => {
       width: 640,
       height: 480,
     });
+  });
+
+  it.each([
+    { label: "INFO", source: bmpImage(4, 2) },
+    { label: "CORE", source: bmpCoreImage(4, 2) },
+  ])("encodes $label BMP input to PNG entirely in-process", async ({ source }) => {
+    const requested: string[] = [];
+    const rastermill = createRastermill({
+      execution: "internal",
+      commandResolver: (command) => {
+        requested.push(command);
+        return command;
+      },
+    });
+
+    const result = await rastermill.encode(source, {
+      format: "png",
+      resize: { maxSide: 2 },
+      compressionLevel: 9,
+    });
+
+    expect(result).toMatchObject({
+      format: "png",
+      width: 2,
+      height: 1,
+      metadata: "stripped",
+      resized: true,
+    });
+    expect(readImageProbeFromHeader(result.data)).toMatchObject({
+      format: "png",
+      width: 2,
+      height: 1,
+    });
+    expect(requested).toEqual([]);
+  });
+
+  it("rejects BMP input over the pixel budget before decoding", async () => {
+    const rastermill = createRastermill({
+      execution: "internal",
+      limits: { inputPixels: 3 },
+    });
+
+    await expect(rastermill.encode(bmpImage(2, 2), { format: "png" })).rejects.toMatchObject({
+      code: "RASTERMILL_INPUT_TOO_LARGE",
+    });
+  });
+
+  it("rejects malformed BMP structures before invoking native tools", async () => {
+    const complete = bmpImage(2, 2);
+    const badOffset = Buffer.from(complete);
+    badOffset.writeUInt32LE(20, 10);
+
+    for (const source of [
+      complete.subarray(0, 40),
+      complete.subarray(0, complete.length - 1),
+      badOffset,
+    ]) {
+      const commandResolver = vi.fn<() => null>(() => null);
+      const rastermill = createRastermill({ commandResolver });
+      await expect(rastermill.encode(source, { format: "png" })).rejects.toMatchObject({
+        code: "RASTERMILL_UNDECODABLE",
+      });
+      expect(commandResolver).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not fall back when Photon rejects a structurally supported BMP", async () => {
+    vi.resetModules();
+    vi.doMock("@silvia-odwyer/photon-node", () => {
+      class MockPhotonImage {
+        static new_from_byteslice(): MockPhotonImage {
+          throw new Error("corrupt BMP pixels");
+        }
+      }
+      return {
+        PhotonImage: MockPhotonImage,
+        SamplingFilter: { Lanczos3: 1 },
+        crop: vi.fn<() => MockPhotonImage>(),
+        resize: vi.fn<() => MockPhotonImage>(),
+      };
+    });
+    const { createRastermill: createFreshRastermill } = await import("../src/index.js");
+    const commandResolver = vi.fn<() => null>(() => null);
+    const rastermill = createFreshRastermill({ commandResolver });
+
+    await expect(rastermill.encode(bmpImage(2, 2), { format: "png" })).rejects.toMatchObject({
+      code: "RASTERMILL_UNDECODABLE",
+    });
+    expect(commandResolver).not.toHaveBeenCalled();
+  });
+
+  it.runIf(imageMagick !== null)(
+    "validates embedded BMP payloads with Photon before native decoding",
+    async () => {
+      const jpeg = await createRastermill({ execution: "internal" }).encode(rgbaImage(2, 2), {
+        format: "jpeg",
+      });
+      const appPayload = Buffer.from([0x41, 0xff, 0xda, 0x42]);
+      const app = Buffer.alloc(appPayload.length + 4);
+      app[0] = 0xff;
+      app[1] = 0xe2;
+      app.writeUInt16BE(appPayload.length + 2, 2);
+      appPayload.copy(app, 4);
+      const jpegWithAppScanMarker = Buffer.concat([
+        jpeg.data.subarray(0, 2),
+        app,
+        jpeg.data.subarray(2),
+      ]);
+      const requested: string[] = [];
+      const rastermill = createRastermill({
+        commandResolver: (command) => {
+          requested.push(command);
+          return command === imageMagick?.command ? imageMagick.path : null;
+        },
+      });
+
+      for (const source of [
+        embeddedBmp(4, 2, 2, jpegWithAppScanMarker),
+        embeddedBmp(5, 2, 2, rgbaImage(2, 2)),
+      ]) {
+        await expect(rastermill.encode(source, { format: "png" })).resolves.toMatchObject({
+          format: "png",
+          width: 2,
+          height: 2,
+        });
+      }
+      expect(requested).toContain(imageMagick?.command);
+    },
+  );
+
+  it("rejects embedded BMP payloads that Photon cannot decode before native resolution", async () => {
+    const jpeg = await createRastermill({ execution: "internal" }).encode(rgbaImage(2, 2), {
+      format: "jpeg",
+    });
+    const scanOffset = jpeg.data.indexOf(Buffer.from([0xff, 0xda]));
+    const scanEnd = scanOffset + 2 + jpeg.data.readUInt16BE(scanOffset + 2);
+    const jpegWithoutScanData = jpeg.data.subarray(0, scanEnd);
+
+    for (const source of [
+      embeddedBmp(4, 2, 2, jpegWithoutScanData),
+      embeddedBmp(5, 2, 2, truecolorPngHeader(2, 2)),
+    ]) {
+      const commandResolver = vi.fn<() => null>(() => null);
+      const rastermill = createRastermill({ commandResolver });
+      await expect(rastermill.encode(source, { format: "png" })).rejects.toMatchObject({
+        code: "RASTERMILL_UNDECODABLE",
+      });
+      expect(commandResolver).not.toHaveBeenCalled();
+    }
+  });
+
+  it("falls back to native decoding for embedded BMP when Photon is unavailable", async () => {
+    const jpeg = await createRastermill({ execution: "internal" }).encode(rgbaImage(2, 2), {
+      format: "jpeg",
+    });
+    const sources = [embeddedBmp(4, 2, 2, jpeg.data), embeddedBmp(5, 2, 2, rgbaImage(2, 2))];
+    const unavailablePhotonFactories = [
+      () => {
+        throw new Error("Cannot find package '@silvia-odwyer/photon-node'");
+      },
+      () => ({ PhotonImage: {} }),
+    ];
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "rastermill-embedded-bmp-fallback-"));
+    try {
+      const log = path.join(tmp, "args.jsonl");
+      const script = path.join(tmp, "magick.js");
+      await writeImageToolScript(script, log, { png: rgbaImage(2, 2) });
+
+      for (const unavailablePhotonFactory of unavailablePhotonFactories) {
+        vi.resetModules();
+        vi.doMock("@silvia-odwyer/photon-node", unavailablePhotonFactory);
+        const { createRastermill: createFreshRastermill } = await import("../src/index.js");
+        const rastermill = createFreshRastermill({
+          commandResolver: (command) => (command === "magick" ? script : null),
+        });
+        for (const source of sources) {
+          await expect(rastermill.encode(source, { format: "png" })).resolves.toMatchObject({
+            format: "png",
+            width: 2,
+            height: 2,
+          });
+        }
+      }
+
+      expect((await readFile(log, "utf8")).trim().split("\n")).toHaveLength(4);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps embedded BMP preflight inside the process for internal execution", async () => {
+    vi.resetModules();
+    vi.doMock("@silvia-odwyer/photon-node", () => ({ PhotonImage: {} }));
+    const { createRastermill: createFreshRastermill } = await import("../src/index.js");
+    const commandResolver = vi.fn<() => string>(() => "magick");
+    const rastermill = createFreshRastermill({ execution: "internal", commandResolver });
+
+    await expect(
+      rastermill.encode(embeddedBmp(5, 2, 2, rgbaImage(2, 2)), { format: "png" }),
+    ).rejects.toThrow("Photon did not expose the required image processor API");
+    expect(commandResolver).not.toHaveBeenCalled();
+  });
+
+  it("rejects embedded BMP payloads over the pixel budget before native fallback", async () => {
+    const commandResolver = vi.fn<() => string>(() => "magick");
+    const rastermill = createRastermill({
+      limits: { inputPixels: 3 },
+      commandResolver,
+    });
+
+    await expect(
+      rastermill.encode(embeddedBmp(5, 1, 1, rgbaImage(2, 2)), { format: "png" }),
+    ).rejects.toMatchObject({ code: "RASTERMILL_INPUT_TOO_LARGE" });
+    expect(commandResolver).not.toHaveBeenCalled();
+  });
+
+  it.runIf(imageMagick !== null).each([
+    { compression: 6 as const, bitCount: 32 as const },
+    { compression: 11 as const, bitCount: 32 as const },
+    { compression: 12 as const, bitCount: 8 as const },
+    { compression: 13 as const, bitCount: 4 as const },
+  ])(
+    "classifies native compression $compression decoder failures as undecodable",
+    async ({ compression, bitCount }) => {
+      const requested: string[] = [];
+      const rastermill = createRastermill({
+        commandResolver: (command) => {
+          requested.push(command);
+          return command === imageMagick?.command ? imageMagick.path : null;
+        },
+      });
+
+      await expect(
+        rastermill.encode(unsupportedBmp(compression, Buffer.from([0]), bitCount), {
+          format: "png",
+        }),
+      ).rejects.toMatchObject({ code: "RASTERMILL_UNDECODABLE" });
+      expect(requested).toContain(imageMagick?.command);
+    },
+  );
+
+  it("keeps native-owned BMP compression unavailable when no processor exists", async () => {
+    const commandResolver = vi.fn<() => null>(() => null);
+    const rastermill = createRastermill({ commandResolver });
+
+    await expect(
+      rastermill.encode(unsupportedBmp(11, Buffer.from([0]), 32), { format: "png" }),
+    ).rejects.toMatchObject({ code: "RASTERMILL_IMAGE_PROCESSOR_UNAVAILABLE" });
+    expect(commandResolver).toHaveBeenCalled();
   });
 
   it("probes within the pixel budget and returns null when over budget", async () => {
@@ -2315,6 +2651,29 @@ describe("Rastermill", () => {
         rastermill.encode(rgbaImage(4, 4), { format: "jpeg", resize: { maxSide: 4 } }),
       ).rejects.toBeInstanceOf(RastermillUnavailableError);
       expect(requested[0]).toBe("sips");
+    },
+  );
+
+  it
+    .runIf(process.platform === "darwin" && existsSync("/usr/bin/sips") && imageMagick !== null)
+    .each(["auto", "external"] as const)(
+    "continues from real sips to ImageMagick for %s JPEG output",
+    async (execution) => {
+      if (!imageMagick) throw new Error("ImageMagick test gate was bypassed");
+      const requested: string[] = [];
+      const rastermill = createRastermill({
+        execution,
+        commandResolver: (command) => {
+          requested.push(command);
+          if (command === "sips") return "/usr/bin/sips";
+          return command === imageMagick.command ? imageMagick.path : null;
+        },
+      });
+
+      await expect(
+        rastermill.encode(unsupportedBmp(11, Buffer.from([0]), 32), { format: "jpeg" }),
+      ).rejects.toMatchObject({ code: "RASTERMILL_UNDECODABLE" });
+      expect(requested.slice(0, 2)).toEqual(["sips", imageMagick.command]);
     },
   );
 
